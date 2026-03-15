@@ -7,6 +7,7 @@ ReportRouting Agent - produces final packet and writes demo-friendly artifacts.
 import json
 import os
 import uuid
+from collections.abc import Mapping, Sequence
 from typing import Any, Dict, List, Optional
 
 from crewai import Agent, Crew, LLM, Task
@@ -21,6 +22,7 @@ from agentic_testing.tools.reporting_tools import (
     write_execution_visual,
     write_final_packet,
     write_html_report,
+    write_pdf_report,
     write_trace_pack,
 )
 
@@ -45,6 +47,7 @@ class RoutingDecision(BaseModel):
 
 
 class ArtifactURIs(BaseModel):
+    report_pdf_uri: str = Field(default="")
     report_html_uri: str = Field(default="")
     execution_visual_uri: str = Field(default="")
     run_json_uri: str = Field(default="")
@@ -69,6 +72,7 @@ class FinalRoutingOutput(BaseModel):
     analysis_scope: AnalysisScope
     change_summary: Dict[str, Any] = Field(default_factory=dict)
     summary_metrics: Dict[str, Any] = Field(default_factory=dict)
+    doc_type_breakdown: Dict[str, Any] = Field(default_factory=dict)
     improvements: List[Dict[str, Any]] = Field(default_factory=list)
     regressions: List[Dict[str, Any]] = Field(default_factory=list)
     hidden_risks: List[Dict[str, Any]] = Field(default_factory=list)
@@ -83,13 +87,29 @@ class FinalRoutingOutput(BaseModel):
 def _as_list(value: Any) -> List[Any]:
     if isinstance(value, list):
         return value
+    if isinstance(value, tuple):
+        return list(value)
+    if isinstance(value, Sequence) and not isinstance(value, (str, bytes, bytearray)):
+        return list(value)
     if value is None:
         return []
     return [value]
 
 
 def _as_dict(value: Any) -> Dict[str, Any]:
-    return value if isinstance(value, dict) else {}
+    if isinstance(value, dict):
+        return value
+    if isinstance(value, Mapping):
+        return {str(k): v for k, v in value.items()}
+    return {}
+
+
+def _to_plain_data(value: Any) -> Any:
+    if isinstance(value, Mapping):
+        return {str(k): _to_plain_data(v) for k, v in value.items()}
+    if isinstance(value, Sequence) and not isinstance(value, (str, bytes, bytearray)):
+        return [_to_plain_data(v) for v in value]
+    return value
 
 
 def _parse_json_or_empty(value: Any) -> Dict[str, Any]:
@@ -242,6 +262,7 @@ def _build_artifact_uris(state_dict: Dict[str, Any], run_id: str) -> Dict[str, s
     workspace_key = str(storage.get("run_workspace_key", run_id))
     base = f"managed://{namespace}/{workspace_key}"
     return {
+        "report_pdf_uri": f"{base}/outputs/Run_Report.pdf",
         "report_html_uri": f"{base}/report.html",
         "execution_visual_uri": f"{base}/execution_flow.html",
         "run_json_uri": f"{base}/latest_run.json",
@@ -256,6 +277,33 @@ def _to_float(value: Any, default: float = 0.0) -> float:
         return float(value)
     except (TypeError, ValueError):
         return default
+
+
+def _hydrate_packet_from_latest_run(packet: Dict[str, Any], workspace_path: str) -> Dict[str, Any]:
+    """
+    Ensure runtime response matches persisted packet content for critical sections.
+    """
+    latest_run_path = os.path.join(workspace_path, "latest_run.json")
+    if not os.path.exists(latest_run_path):
+        return packet
+    try:
+        with open(latest_run_path, "r", encoding="utf-8") as fh:
+            persisted = json.load(fh)
+    except Exception:
+        return packet
+
+    for key in ("summary_metrics", "doc_type_breakdown", "change_summary"):
+        if not _as_dict(packet.get(key)) and _as_dict(persisted.get(key)):
+            packet[key] = _as_dict(persisted.get(key))
+
+    if not _as_list(packet.get("improvements")) and _as_list(persisted.get("improvements")):
+        packet["improvements"] = _as_list(persisted.get("improvements"))
+    if not _as_list(packet.get("regressions")) and _as_list(persisted.get("regressions")):
+        packet["regressions"] = _as_list(persisted.get("regressions"))
+    if not _as_list(packet.get("hidden_risks")) and _as_list(persisted.get("hidden_risks")):
+        packet["hidden_risks"] = _as_list(persisted.get("hidden_risks"))
+
+    return packet
 
 
 def _write_excel_run_report(
@@ -307,6 +355,43 @@ def _write_excel_run_report(
     if timeline_rows:
         write_sheet._run(workbook_path=report_path, sheet_name="ExecutionTimeline", rows=timeline_rows, overwrite=True)
 
+    summary_metrics = _as_dict(packet.get("summary_metrics"))
+    metrics_rows = [{"Metric": k, "Value": v} for k, v in summary_metrics.items()]
+    if metrics_rows:
+        write_sheet._run(workbook_path=report_path, sheet_name="SummaryMetrics", rows=metrics_rows, overwrite=True)
+
+    doc_type_breakdown = _as_dict(packet.get("doc_type_breakdown"))
+    breakdown_rows: List[Dict[str, Any]] = []
+    for doc_type, info in doc_type_breakdown.items():
+        info = info if isinstance(info, dict) else {}
+        breakdown_rows.append(
+            {
+                "DocType": doc_type,
+                "WeightedF1Delta": info.get("weighted_f1_delta", 0.0),
+                "ImprovementCount": info.get("improvement_count", 0),
+                "RegressionCount": info.get("regression_count", 0),
+            }
+        )
+    if breakdown_rows:
+        write_sheet._run(workbook_path=report_path, sheet_name="DocTypeBreakdown", rows=breakdown_rows, overwrite=True)
+
+    patch_rows = []
+    for patch in _as_list(packet.get("patch_candidates")):
+        if not isinstance(patch, dict):
+            continue
+        patch_rows.append(
+            {
+                "PatchID": patch.get("patch_id", ""),
+                "PatchType": patch.get("patch_type", ""),
+                "Target": patch.get("target", ""),
+                "Description": patch.get("description", ""),
+                "Confidence": patch.get("confidence", 0.0),
+                "RequiresHumanApproval": patch.get("requires_human_approval", True),
+            }
+        )
+    if patch_rows:
+        write_sheet._run(workbook_path=report_path, sheet_name="PatchCandidates", rows=patch_rows, overwrite=True)
+
     return report_path
 
 
@@ -316,6 +401,8 @@ def _write_artifacts(packet: Dict[str, Any], state_dict: Dict[str, Any]) -> Dict
     os.makedirs(workspace_path, exist_ok=True)
 
     audit_events = _as_list(state_dict.get("audit_events"))
+    policy = _as_dict(state_dict.get("policy"))
+    summary_metrics = _as_dict(packet.get("summary_metrics"))
 
     html_state = {
         "run_id": run_id,
@@ -326,11 +413,17 @@ def _write_artifacts(packet: Dict[str, Any], state_dict: Dict[str, Any]) -> Dict
         "date_from": _as_dict(packet.get("analysis_scope")).get("date_from", ""),
         "date_to": _as_dict(packet.get("analysis_scope")).get("date_to", ""),
         "metrics": _as_dict(packet.get("summary_metrics")),
+        "doc_type_breakdown": _as_dict(state_dict.get("doc_type_breakdown")),
         "improvements": _as_list(packet.get("improvements")),
         "regressions": _as_list(packet.get("regressions")),
         "hidden_risks": _as_list(packet.get("hidden_risks")),
         "root_causes": _as_list(packet.get("root_causes")),
         "patch_candidates": _as_list(packet.get("patch_candidates")),
+        "doc_type_count": len(_as_dict(state_dict.get("doc_type_breakdown"))),
+        "rerun_count": int(state_dict.get("rerun_count", 0) or 0),
+        "weighted_f1_delta": summary_metrics.get("weighted_f1_delta", "-"),
+        "warn_threshold": policy.get("warn_weighted_f1_drop", 0.02),
+        "block_threshold": policy.get("block_weighted_f1_drop", 0.05),
         "routing_decision": _as_dict(packet.get("routing")).get("verdict_rationale", ""),
         "trend_direction": state_dict.get("trend_direction", "unknown"),
         "agentic_actions": _as_list(packet.get("agentic_actions_taken")),
@@ -368,6 +461,10 @@ def _write_artifacts(packet: Dict[str, Any], state_dict: Dict[str, Any]) -> Dict
 
     _record_tool_result("write_html_report", write_html_report._run(run_state=html_state))
     _record_tool_result("write_execution_visual", write_execution_visual._run(run_state=html_state))
+
+    pdf_enabled = _requested_output(state_dict.get("requested_outputs"), "pdf_report", True)
+    if pdf_enabled:
+        _record_tool_result("write_pdf_report", write_pdf_report._run(run_state=html_state))
 
     excel_enabled = _requested_output(state_dict.get("requested_outputs"), "excel_log", True)
     if excel_enabled:
@@ -631,6 +728,7 @@ def run_report_routing(state_dict: Dict[str, Any]) -> Dict[str, Any]:
         },
         "change_summary": change_summary,
         "summary_metrics": summary_metrics,
+        "doc_type_breakdown": _as_dict(state_dict.get("doc_type_breakdown")),
         "improvements": improvement_findings,
         "regressions": regression_findings,
         "hidden_risks": hidden_risk_findings,
@@ -655,6 +753,8 @@ def run_report_routing(state_dict: Dict[str, Any]) -> Dict[str, Any]:
 
     try:
         packet = _write_artifacts(packet=packet, state_dict=state_dict)
+        packet = _hydrate_packet_from_latest_run(packet, workspace_path=workspace_path)
+        packet = _to_plain_data(packet)
     except Exception as exc:
         log_event(
             LOGGER,
@@ -674,6 +774,12 @@ def run_report_routing(state_dict: Dict[str, Any]) -> Dict[str, Any]:
 
     try:
         validated = FinalRoutingOutput(**packet)
+        validated_payload = validated.model_dump()
+        # Guard against provider/runtime proxy coercion stripping populated sections.
+        if not _as_dict(validated_payload.get("summary_metrics")) and _as_dict(packet.get("summary_metrics")):
+            validated_payload["summary_metrics"] = _as_dict(packet.get("summary_metrics"))
+        if not _as_dict(validated_payload.get("doc_type_breakdown")) and _as_dict(packet.get("doc_type_breakdown")):
+            validated_payload["doc_type_breakdown"] = _as_dict(packet.get("doc_type_breakdown"))
         log_event(
             LOGGER,
             event="report_routing_complete",
@@ -687,7 +793,7 @@ def run_report_routing(state_dict: Dict[str, Any]) -> Dict[str, Any]:
                 "error_count": len(_as_list(packet.get("errors"))),
             },
         )
-        return validated.model_dump()
+        return validated_payload
     except ValidationError as exc:
         packet["error"] = "final_output_validation_failed"
         packet["detail"] = exc.errors()

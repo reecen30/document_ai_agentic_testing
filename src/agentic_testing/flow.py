@@ -24,6 +24,7 @@ import datetime
 import json
 import mimetypes
 import os
+from collections.abc import Mapping, Sequence
 from pathlib import Path
 from typing import Any, Dict
 
@@ -49,6 +50,17 @@ from .agents.report_routing import run_report_routing
 LOGGER = get_runtime_logger("flow")
 
 
+def _to_plain_data(value: Any) -> Any:
+    """Convert proxy/mapping container types to plain JSON-serializable Python objects."""
+    if isinstance(value, Mapping):
+        return {str(k): _to_plain_data(v) for k, v in value.items()}
+    if isinstance(value, (list, tuple, set)):
+        return [_to_plain_data(v) for v in value]
+    if isinstance(value, Sequence) and not isinstance(value, (str, bytes, bytearray)):
+        return [_to_plain_data(v) for v in value]
+    return value
+
+
 def _resolve_workspace_path(state: FlowState) -> str:
     """Resolve the workspace path for this run."""
     base = state.storage_config.get("workspace_base_path") or os.getenv("WORKSPACE_BASE_PATH", "workspaces")
@@ -59,7 +71,19 @@ def _resolve_workspace_path(state: FlowState) -> str:
 def _resolve_evidence_store_path(state: FlowState) -> str:
     """Resolve the evidence store path."""
     store_ref = state.evidence_store_config.get("store_ref", "DocumentAI_EvidenceStore")
-    return os.getenv("EVIDENCE_STORE_PATH", f"data/{store_ref}.xlsx")
+    payload_path = f"data/{store_ref}.xlsx"
+
+    # Explicit override wins when provided (for advanced ops scenarios).
+    env_override = os.getenv("EVIDENCE_STORE_PATH_OVERRIDE")
+    if env_override:
+        return env_override
+
+    # Prefer payload-selected workbook if present.
+    if os.path.exists(payload_path):
+        return payload_path
+
+    # Fallback to legacy env var, then payload path.
+    return os.getenv("EVIDENCE_STORE_PATH", payload_path)
 
 
 def _resolve_audit_log_path(workspace_path: str) -> str:
@@ -539,7 +563,7 @@ class AgenticTestingFlow(Flow[FlowState]):
         self.state.end_datetime = datetime.datetime.utcnow().isoformat()
         self.state.add_audit_event("ReportRoutingAgent", "START", "Writing all outputs")
         try:
-            result = run_report_routing(
+            routing_input = _to_plain_data(
                 {
                     "run_id": self.state.run_id,
                     "workspace_path": self.state.workspace_path,
@@ -586,6 +610,7 @@ class AgenticTestingFlow(Flow[FlowState]):
                     "error_log": self.state.error_log,
                 }
             )
+            result = run_report_routing(routing_input)
         except Exception as exc:
             self._record_step_error("ReportRoutingAgent", exc)
             result = self._safe_fallback_packet(str(exc))
@@ -660,6 +685,7 @@ def run_flow_from_maestro_payload(payload) -> Dict[str, Any]:
             "block_release": True,
             "request_human_review": True,
         }
+        result = _to_plain_data(result)
         log_event(
             LOGGER,
             event="run_flow_exit",
