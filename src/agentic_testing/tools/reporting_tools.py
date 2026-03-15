@@ -9,6 +9,11 @@ from typing import Any, Dict, List, Type
 
 from crewai.tools import BaseTool
 from pydantic import BaseModel, Field
+from reportlab.lib import colors
+from reportlab.lib.pagesizes import A4
+from reportlab.lib.styles import ParagraphStyle, getSampleStyleSheet
+from reportlab.lib.units import mm
+from reportlab.platypus import Paragraph, SimpleDocTemplate, Spacer, Table, TableStyle
 
 
 def _ensure_dir(path: str) -> None:
@@ -52,24 +57,64 @@ def _render_bullets(items: List[Any], empty_msg: str) -> str:
 
 
 def _render_metrics_rows(metrics: Dict[str, Any]) -> str:
+    metric_aliases = [
+        ("weighted_f1", "Weighted F1"),
+        ("classification_accuracy", "Classification Accuracy"),
+        ("exact_match_rate", "Extraction Exact Match"),
+        ("empty_rate", "Extraction Empty Rate"),
+    ]
+    consumed = set()
     rows: List[str] = []
-    for key, value in metrics.items():
-        if isinstance(value, dict):
-            baseline = _escape(value.get("baseline", ""))
-            candidate = _escape(value.get("candidate", ""))
-            raw_delta = value.get("delta", "")
-            try:
-                delta_num = float(raw_delta)
-                cls = "delta-pos" if delta_num > 0 else "delta-neg" if delta_num < 0 else "delta-flat"
-                delta = f"<span class='{cls}'>{delta_num:+.4f}</span>"
-            except (TypeError, ValueError):
-                delta = _escape(raw_delta)
-            rows.append(
-                f"<tr><td>{_escape(key)}</td><td>{baseline}</td><td>{candidate}</td><td>{delta}</td></tr>"
-            )
+    for prefix, label in metric_aliases:
+        b_key = f"{prefix}_baseline"
+        c_key = f"{prefix}_candidate"
+        d_key = f"{prefix}_delta"
+        baseline = metrics.get(b_key)
+        candidate = metrics.get(c_key)
+        delta = metrics.get(d_key)
+        if delta is None and isinstance(baseline, (int, float)) and isinstance(candidate, (int, float)):
+            delta = float(candidate) - float(baseline)
+        if baseline is None and candidate is None and delta is None:
+            continue
+        consumed.update({b_key, c_key, d_key})
+        if isinstance(delta, (int, float)):
+            cls = "delta-pos" if delta > 0 else "delta-neg" if delta < 0 else "delta-flat"
+            delta_html = f"<span class='{cls}'>{delta:+.4f}</span>"
         else:
-            rows.append(f"<tr><td>{_escape(key)}</td><td colspan='3'>{_escape(value)}</td></tr>")
+            delta_html = _escape(delta)
+        rows.append(
+            f"<tr><td>{_escape(label)}</td><td>{_escape(baseline)}</td><td>{_escape(candidate)}</td><td>{delta_html}</td></tr>"
+        )
+
+    for key, value in metrics.items():
+        if key in consumed:
+            continue
+        rows.append(f"<tr><td>{_escape(key)}</td><td colspan='3'>{_escape(value)}</td></tr>")
     return "".join(rows) if rows else "<tr><td colspan='4'>No metrics available.</td></tr>"
+
+
+def _render_doc_type_rows(doc_type_breakdown: Dict[str, Any]) -> str:
+    if not isinstance(doc_type_breakdown, dict) or not doc_type_breakdown:
+        return "<tr><td colspan='4'>No doc-type breakdown available.</td></tr>"
+    rows: List[str] = []
+    for doc_type, info in sorted(doc_type_breakdown.items(), key=lambda kv: str(kv[0])):
+        info = info if isinstance(info, dict) else {}
+        delta = info.get("weighted_f1_delta")
+        try:
+            delta_value = float(delta)
+            cls = "delta-pos" if delta_value > 0 else "delta-neg" if delta_value < 0 else "delta-flat"
+            delta_html = f"<span class='{cls}'>{delta_value:+.4f}</span>"
+        except (TypeError, ValueError):
+            delta_html = _escape(delta)
+        rows.append(
+            "<tr>"
+            f"<td>{_escape(doc_type)}</td>"
+            f"<td>{_escape(info.get('improvement_count', 0))}</td>"
+            f"<td>{_escape(info.get('regression_count', 0))}</td>"
+            f"<td>{delta_html}</td>"
+            "</tr>"
+        )
+    return "".join(rows)
 
 
 def _normalize_events(events: List[Dict[str, Any]]) -> List[Dict[str, str]]:
@@ -202,7 +247,7 @@ _HTML_TEMPLATE = """\
       background: rgba(255,255,255,0.2);
     }}
     .container {{ padding: 22px 24px 32px; max-width: 1200px; margin: 0 auto; }}
-    .grid {{ display: grid; grid-template-columns: repeat(4, minmax(150px, 1fr)); gap: 12px; }}
+    .grid {{ display: grid; grid-template-columns: repeat(6, minmax(130px, 1fr)); gap: 12px; }}
     .kpi {{
       background: var(--card);
       border: 1px solid var(--line);
@@ -274,9 +319,12 @@ _HTML_TEMPLATE = """\
   <main class="container">
     <section class="grid">
       <article class="kpi"><div class="label">Transactions</div><div class="value">{transaction_count}</div></article>
+      <article class="kpi"><div class="label">Doc Types</div><div class="value">{doc_type_count}</div></article>
       <article class="kpi"><div class="label">Improvements</div><div class="value">{improvement_count}</div></article>
       <article class="kpi"><div class="label">Regressions</div><div class="value">{regression_count}</div></article>
       <article class="kpi"><div class="label">Hidden Risks</div><div class="value">{risk_count}</div></article>
+      <article class="kpi"><div class="label">Reruns</div><div class="value">{rerun_count}</div></article>
+      <article class="kpi"><div class="label">F1 Delta</div><div class="value">{weighted_f1_delta}</div></article>
     </section>
 
     <section class="section">
@@ -301,6 +349,15 @@ _HTML_TEMPLATE = """\
         <tr><th>Metric</th><th>Baseline</th><th>Candidate</th><th>Delta</th></tr>
         {metrics_rows}
       </table>
+    </section>
+
+    <section class="section">
+      <h2>Doc Type Breakdown</h2>
+      <table>
+        <tr><th>Document Type</th><th>Improvements</th><th>Regressions</th><th>Weighted F1 Delta</th></tr>
+        {doc_type_rows}
+      </table>
+      <p class="muted" style="margin-top:10px;">Policy gates: warn drop={warn_threshold}, block drop={block_threshold}</p>
     </section>
 
     <section class="section">
@@ -421,8 +478,14 @@ class WriteHtmlReportTool(BaseTool):
             date_from = run_state.get("date_from", "")
             date_to = run_state.get("date_to", "")
             generated_at = _ts()
+            doc_type_count = int(run_state.get("doc_type_count", 0) or 0)
+            rerun_count = int(run_state.get("rerun_count", 0) or 0)
+            weighted_f1_delta = run_state.get("weighted_f1_delta", "-")
+            warn_threshold = run_state.get("warn_threshold", "")
+            block_threshold = run_state.get("block_threshold", "")
 
             metrics = run_state.get("metrics") if isinstance(run_state.get("metrics"), dict) else {}
+            doc_type_breakdown = run_state.get("doc_type_breakdown") if isinstance(run_state.get("doc_type_breakdown"), dict) else {}
             improvements = _as_list(run_state.get("improvements"))
             regressions = _as_list(run_state.get("regressions"))
             hidden_risks = _as_list(run_state.get("hidden_risks"))
@@ -445,11 +508,14 @@ class WriteHtmlReportTool(BaseTool):
                 verdict=_escape(verdict),
                 confidence_percent=_escape(_fmt_percent(confidence)),
                 transaction_count=_escape(transaction_count),
+                doc_type_count=_escape(doc_type_count),
                 date_from=_escape(date_from),
                 date_to=_escape(date_to),
                 improvement_count=_escape(len(improvements)),
                 regression_count=_escape(len(regressions)),
                 risk_count=_escape(len(hidden_risks)),
+                rerun_count=_escape(rerun_count),
+                weighted_f1_delta=_escape(weighted_f1_delta),
                 flow_strip_html=flow_strip_html,
                 routing_decision=routing_decision,
                 trend_direction=trend_direction,
@@ -463,6 +529,9 @@ class WriteHtmlReportTool(BaseTool):
                 root_causes_html=_render_bullets(root_causes, "No root causes identified."),
                 patch_candidates_html=_render_bullets(patch_candidates, "No patch candidates."),
                 timeline_html=timeline_html,
+                doc_type_rows=_render_doc_type_rows(doc_type_breakdown),
+                warn_threshold=_escape(warn_threshold),
+                block_threshold=_escape(block_threshold),
             )
 
             with open(report_path, "w", encoding="utf-8") as f:
@@ -513,6 +582,188 @@ class WriteExecutionVisualTool(BaseTool):
             return json.dumps({"status": "ok", "path": output_path})
         except Exception as exc:
             return json.dumps({"error": str(exc), "tool": "write_execution_visual"})
+
+
+class WritePdfReportInput(BaseModel):
+    run_state: Dict[str, Any] = Field(
+        ...,
+        description=(
+            "Run state dict with reporting data including verdict, metrics, findings, "
+            "routing rationale, and execution events."
+        ),
+    )
+
+
+class WritePdfReportTool(BaseTool):
+    name: str = "write_pdf_report"
+    description: str = (
+        "Generate a polished PDF report at <workspace_path>/outputs/Run_Report.pdf "
+        "with KPI summary, metrics, findings, and routing decision."
+    )
+    args_schema: Type[BaseModel] = WritePdfReportInput
+
+    def _run(self, run_state: Dict[str, Any]) -> str:
+        try:
+            workspace_path = str(run_state.get("workspace_path", "."))
+            output_path = os.path.join(workspace_path, "outputs", "Run_Report.pdf")
+            _ensure_dir(output_path)
+
+            run_id = str(run_state.get("run_id", "UNKNOWN"))
+            verdict = str(run_state.get("verdict", "UNKNOWN")).upper()
+            confidence = _fmt_percent(run_state.get("confidence", 0.0))
+            date_from = str(run_state.get("date_from", ""))
+            date_to = str(run_state.get("date_to", ""))
+            transaction_count = int(run_state.get("transaction_count", 0) or 0)
+            rerun_count = int(run_state.get("rerun_count", 0) or 0)
+            improvements = _as_list(run_state.get("improvements"))
+            regressions = _as_list(run_state.get("regressions"))
+            hidden_risks = _as_list(run_state.get("hidden_risks"))
+            root_causes = _as_list(run_state.get("root_causes"))
+            patch_candidates = _as_list(run_state.get("patch_candidates"))
+            metrics = run_state.get("metrics") if isinstance(run_state.get("metrics"), dict) else {}
+            doc_type_breakdown = (
+                run_state.get("doc_type_breakdown")
+                if isinstance(run_state.get("doc_type_breakdown"), dict)
+                else {}
+            )
+            routing_decision = str(run_state.get("routing_decision", "No routing decision provided."))
+            trend_direction = str(run_state.get("trend_direction", "unknown"))
+
+            styles = getSampleStyleSheet()
+            styles.add(ParagraphStyle(name="RunTitle", fontSize=18, leading=22, textColor=colors.HexColor("#0F4C81")))
+            styles.add(ParagraphStyle(name="SectionTitle", fontSize=12, leading=15, textColor=colors.HexColor("#155C9A")))
+            styles.add(ParagraphStyle(name="BodySmall", fontSize=9, leading=12))
+
+            doc = SimpleDocTemplate(
+                output_path,
+                pagesize=A4,
+                leftMargin=14 * mm,
+                rightMargin=14 * mm,
+                topMargin=14 * mm,
+                bottomMargin=14 * mm,
+                title=f"Document AI Report - {run_id}",
+            )
+
+            story: List[Any] = []
+            story.append(Paragraph("Document AI Agentic Testing Report", styles["RunTitle"]))
+            story.append(
+                Paragraph(
+                    f"Run ID: <b>{_escape(run_id)}</b> | Verdict: <b>{_escape(verdict)}</b> | Confidence: <b>{_escape(confidence)}</b>",
+                    styles["BodySmall"],
+                )
+            )
+            story.append(
+                Paragraph(
+                    f"Date Range: <b>{_escape(date_from)}</b> to <b>{_escape(date_to)}</b> | Transactions: <b>{transaction_count}</b> | Reruns: <b>{rerun_count}</b>",
+                    styles["BodySmall"],
+                )
+            )
+            story.append(Spacer(1, 8))
+
+            summary_data = [
+                ["Improvements", str(len(improvements)), "Regressions", str(len(regressions))],
+                ["Hidden Risks", str(len(hidden_risks)), "Trend Direction", trend_direction],
+            ]
+            summary_table = Table(summary_data, colWidths=[38 * mm, 24 * mm, 38 * mm, 70 * mm])
+            summary_table.setStyle(
+                TableStyle(
+                    [
+                        ("BACKGROUND", (0, 0), (-1, -1), colors.HexColor("#F4F7FB")),
+                        ("TEXTCOLOR", (0, 0), (-1, -1), colors.HexColor("#152033")),
+                        ("FONTNAME", (0, 0), (-1, -1), "Helvetica"),
+                        ("FONTSIZE", (0, 0), (-1, -1), 9),
+                        ("GRID", (0, 0), (-1, -1), 0.5, colors.HexColor("#D9E2EF")),
+                        ("VALIGN", (0, 0), (-1, -1), "MIDDLE"),
+                    ]
+                )
+            )
+            story.append(summary_table)
+            story.append(Spacer(1, 10))
+
+            story.append(Paragraph("Routing Decision", styles["SectionTitle"]))
+            story.append(Paragraph(_escape(routing_decision), styles["BodySmall"]))
+            story.append(Spacer(1, 8))
+
+            story.append(Paragraph("Summary Metrics", styles["SectionTitle"]))
+            metric_rows = [["Metric", "Baseline", "Candidate", "Delta"]]
+            metric_aliases = [
+                ("weighted_f1", "Weighted F1"),
+                ("classification_accuracy", "Classification Accuracy"),
+                ("exact_match_rate", "Extraction Exact Match"),
+                ("empty_rate", "Extraction Empty Rate"),
+            ]
+            for prefix, label in metric_aliases:
+                b = metrics.get(f"{prefix}_baseline")
+                c = metrics.get(f"{prefix}_candidate")
+                d = metrics.get(f"{prefix}_delta")
+                if d is None and isinstance(b, (int, float)) and isinstance(c, (int, float)):
+                    d = float(c) - float(b)
+                metric_rows.append([label, str(b), str(c), str(d)])
+
+            metrics_table = Table(metric_rows, colWidths=[55 * mm, 35 * mm, 35 * mm, 35 * mm])
+            metrics_table.setStyle(
+                TableStyle(
+                    [
+                        ("BACKGROUND", (0, 0), (-1, 0), colors.HexColor("#EAF1FB")),
+                        ("FONTNAME", (0, 0), (-1, 0), "Helvetica-Bold"),
+                        ("FONTSIZE", (0, 0), (-1, -1), 8.5),
+                        ("GRID", (0, 0), (-1, -1), 0.4, colors.HexColor("#D9E2EF")),
+                        ("VALIGN", (0, 0), (-1, -1), "MIDDLE"),
+                    ]
+                )
+            )
+            story.append(metrics_table)
+            story.append(Spacer(1, 10))
+
+            story.append(Paragraph("Document Type Breakdown", styles["SectionTitle"]))
+            breakdown_rows = [["Document Type", "Improvements", "Regressions", "Weighted F1 Delta"]]
+            for doc_type, info in sorted(doc_type_breakdown.items(), key=lambda kv: str(kv[0])):
+                info = info if isinstance(info, dict) else {}
+                breakdown_rows.append(
+                    [
+                        str(doc_type),
+                        str(info.get("improvement_count", 0)),
+                        str(info.get("regression_count", 0)),
+                        str(info.get("weighted_f1_delta", 0.0)),
+                    ]
+                )
+            if len(breakdown_rows) == 1:
+                breakdown_rows.append(["-", "0", "0", "0.0"])
+
+            breakdown_table = Table(breakdown_rows, colWidths=[70 * mm, 30 * mm, 30 * mm, 30 * mm])
+            breakdown_table.setStyle(
+                TableStyle(
+                    [
+                        ("BACKGROUND", (0, 0), (-1, 0), colors.HexColor("#EAF1FB")),
+                        ("FONTNAME", (0, 0), (-1, 0), "Helvetica-Bold"),
+                        ("FONTSIZE", (0, 0), (-1, -1), 8.5),
+                        ("GRID", (0, 0), (-1, -1), 0.4, colors.HexColor("#D9E2EF")),
+                    ]
+                )
+            )
+            story.append(breakdown_table)
+            story.append(Spacer(1, 10))
+
+            def _add_list_section(title: str, items: List[Any], empty_text: str) -> None:
+                story.append(Paragraph(title, styles["SectionTitle"]))
+                if not items:
+                    story.append(Paragraph(empty_text, styles["BodySmall"]))
+                    story.append(Spacer(1, 6))
+                    return
+                for idx, item in enumerate(items[:8], start=1):
+                    story.append(Paragraph(f"{idx}. {_escape(item)}", styles["BodySmall"]))
+                story.append(Spacer(1, 6))
+
+            _add_list_section("Improvements", improvements, "No improvements detected.")
+            _add_list_section("Regressions", regressions, "No regressions detected.")
+            _add_list_section("Hidden Risks", hidden_risks, "No hidden risks detected.")
+            _add_list_section("Root Causes", root_causes, "No root causes identified.")
+            _add_list_section("Patch Candidates", patch_candidates, "No patch candidates.")
+
+            doc.build(story)
+            return json.dumps({"status": "ok", "path": output_path})
+        except Exception as exc:
+            return json.dumps({"error": str(exc), "tool": "write_pdf_report"})
 
 
 class WriteTracePackInput(BaseModel):
@@ -635,6 +886,7 @@ class WriteAuditLogEventTool(BaseTool):
 
 write_html_report = WriteHtmlReportTool()
 write_execution_visual = WriteExecutionVisualTool()
+write_pdf_report = WritePdfReportTool()
 write_trace_pack = WriteTracePackTool()
 write_final_packet = WriteFinalPacketTool()
 write_audit_log_event = WriteAuditLogEventTool()

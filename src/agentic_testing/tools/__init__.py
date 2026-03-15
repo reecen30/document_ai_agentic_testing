@@ -57,10 +57,12 @@ from .rerun_tools import (
 )
 from .reporting_tools import (
     WriteHtmlReportTool,
+    WritePdfReportTool,
     WriteTracePackTool,
     WriteFinalPacketTool,
     WriteAuditLogEventTool,
     write_html_report,
+    write_pdf_report,
     write_trace_pack,
     write_final_packet,
     write_audit_log_event,
@@ -102,8 +104,8 @@ __all__ = [
     "ExpandScopeByPatternTool", "RequestTargetedRerunTool", "WritePatchCandidateTool",
     "expand_scope_by_pattern", "request_targeted_rerun", "write_patch_candidate",
     # reporting_tools
-    "WriteHtmlReportTool", "WriteTracePackTool", "WriteFinalPacketTool", "WriteAuditLogEventTool",
-    "write_html_report", "write_trace_pack", "write_final_packet", "write_audit_log_event",
+    "WriteHtmlReportTool", "WritePdfReportTool", "WriteTracePackTool", "WriteFinalPacketTool", "WriteAuditLogEventTool",
+    "write_html_report", "write_pdf_report", "write_trace_pack", "write_final_packet", "write_audit_log_event",
     # logging_tools
     "LogAgentEventTool", "LogToolCallTool", "LogWarningTool", "WriteModelDataTraceTool",
     "log_agent_event", "log_tool_call", "log_warning", "write_model_data_trace",
