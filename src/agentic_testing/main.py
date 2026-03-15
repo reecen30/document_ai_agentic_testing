@@ -14,6 +14,18 @@ import json
 import os
 import sys
 
+from agentic_testing.flow import AgenticTestingFlow, run_flow_from_maestro_payload
+
+
+class AgenticTestingDeploymentFlow(AgenticTestingFlow):
+    """
+    Deployment shim for CrewAI AMP flow auto-discovery.
+
+    AMP validates that a Flow subclass exists in this module.
+    """
+
+    pass
+
 
 def kickoff(inputs=None):
     """
@@ -54,7 +66,6 @@ def kickoff(inputs=None):
             os.path.dirname(__file__), "..", "..", "data", "DocumentAI_EvidenceStore.xlsx"
         )
 
-    from agentic_testing.flow import run_flow_from_maestro_payload
     return run_flow_from_maestro_payload(inputs)
 
 
