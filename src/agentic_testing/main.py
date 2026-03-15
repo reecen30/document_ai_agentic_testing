@@ -13,6 +13,7 @@ This module handles both.
 import json
 import os
 import sys
+from collections.abc import Mapping
 from typing import Any
 
 from crewai.flow.flow import Flow, start
@@ -46,6 +47,40 @@ def _try_parse_json_string(value: Any) -> Any:
         return value
 
 
+def _to_plain_obj(value: Any) -> Any:
+    """
+    Convert mapping-proxy style objects (e.g., LockedDictProxy) into plain Python
+    dict/list primitives so validation behaves consistently.
+    """
+    parsed = _try_parse_json_string(value)
+    if isinstance(parsed, Mapping):
+        return {str(k): _to_plain_obj(v) for k, v in parsed.items()}
+    if isinstance(parsed, list):
+        return [_to_plain_obj(v) for v in parsed]
+    if isinstance(parsed, tuple):
+        return [_to_plain_obj(v) for v in parsed]
+    return parsed
+
+
+def _is_effectively_empty(value: Any) -> bool:
+    if value is None:
+        return True
+    if isinstance(value, str):
+        return value.strip() == ""
+    if isinstance(value, Mapping):
+        return len(value) == 0
+    if isinstance(value, (list, tuple, set)):
+        return len(value) == 0
+    return False
+
+
+def _has_any_meaningful_envelope_value(envelope: dict) -> bool:
+    for key in _ENVELOPE_KEYS:
+        if key in envelope and not _is_effectively_empty(envelope.get(key)):
+            return True
+    return False
+
+
 def _extract_payload_from_split_fields(source: dict) -> dict:
     """
     Extract legacy split fields from CrewAI training UI into one Maestro envelope.
@@ -54,7 +89,9 @@ def _extract_payload_from_split_fields(source: dict) -> dict:
     candidate: dict = {}
     for key in _ENVELOPE_KEYS:
         if key in source:
-            candidate[key] = _try_parse_json_string(source.get(key))
+            value = _to_plain_obj(source.get(key))
+            if not _is_effectively_empty(value):
+                candidate[key] = value
     return candidate
 
 
@@ -66,24 +103,23 @@ def _normalize_maestro_payload(raw_payload: Any) -> dict:
       3) wrapper {"maestro_payload": <dict-or-json-string>}
     and return a validated Maestro payload dict.
     """
-    payload = _try_parse_json_string(raw_payload)
+    payload = _to_plain_obj(raw_payload)
 
     if not isinstance(payload, dict):
         raise ValueError(
             "Input must be a JSON object/string OR {\"maestro_payload\": <json object/string>}."
         )
 
-    wrapped_value = payload.get("maestro_payload")
-    wrapped_payload = _try_parse_json_string(wrapped_value)
+    wrapped_payload = _to_plain_obj(payload.get("maestro_payload"))
 
     candidate: dict = {}
 
     # Preferred: one-field wrapper.
-    if isinstance(wrapped_payload, dict) and wrapped_payload:
+    if isinstance(wrapped_payload, dict) and _has_any_meaningful_envelope_value(wrapped_payload):
         candidate = wrapped_payload
     # Direct full envelope passed at root.
-    elif all(k in payload for k in _ENVELOPE_KEYS):
-        candidate = {k: _try_parse_json_string(payload.get(k)) for k in _ENVELOPE_KEYS}
+    elif all(k in payload for k in _ENVELOPE_KEYS) and _has_any_meaningful_envelope_value(payload):
+        candidate = {k: _to_plain_obj(payload.get(k)) for k in _ENVELOPE_KEYS}
     # Legacy split fields in UI (some or all keys present at root).
     else:
         candidate = _extract_payload_from_split_fields(payload)
@@ -108,15 +144,6 @@ class MaestroSinglePayloadState(BaseModel):
         default=None,
         description="Full Maestro envelope JSON as object or JSON string.",
     )
-    # Backward compatibility if old deployment UI still sends split fields.
-    run_request: Any = Field(default_factory=dict)
-    scope: Any = Field(default_factory=dict)
-    current_execution_artifact: Any = Field(default_factory=dict)
-    previous_execution_artifact: Any = Field(default_factory=dict)
-    evidence_store: Any = Field(default_factory=dict)
-    storage: Any = Field(default_factory=dict)
-    policy: Any = Field(default_factory=dict)
-    requested_outputs: Any = Field(default_factory=dict)
 
 
 class AgenticTestingDeploymentFlow(Flow[MaestroSinglePayloadState]):
@@ -127,18 +154,7 @@ class AgenticTestingDeploymentFlow(Flow[MaestroSinglePayloadState]):
 
     @start()
     def run_from_maestro_contract(self) -> dict:
-        raw_inputs = {
-            "maestro_payload": self.state.maestro_payload,
-            "run_request": self.state.run_request,
-            "scope": self.state.scope,
-            "current_execution_artifact": self.state.current_execution_artifact,
-            "previous_execution_artifact": self.state.previous_execution_artifact,
-            "evidence_store": self.state.evidence_store,
-            "storage": self.state.storage,
-            "policy": self.state.policy,
-            "requested_outputs": self.state.requested_outputs,
-        }
-        validated_payload = _normalize_maestro_payload(raw_inputs)
+        validated_payload = _normalize_maestro_payload({"maestro_payload": self.state.maestro_payload})
         return run_flow_from_maestro_payload(validated_payload)
 
 
