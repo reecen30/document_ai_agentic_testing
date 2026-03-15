@@ -17,7 +17,7 @@ from collections.abc import Mapping
 from typing import Any
 
 from crewai.flow.flow import Flow, start
-from pydantic import BaseModel, Field
+from pydantic import AliasChoices, BaseModel, Field
 
 from agentic_testing.flow import run_flow_from_maestro_payload
 from agentic_testing.schemas.maestro_input import MaestroInput
@@ -95,6 +95,34 @@ def _extract_payload_from_split_fields(source: dict) -> dict:
     return candidate
 
 
+def _unwrap_envelope_wrappers(raw_payload: Any) -> Any:
+    """
+    Unwrap common transport wrappers used by different callers.
+    Handles repeated nesting like:
+      {"inputs": {"maestro_payload": {...}}}
+      {"maestro_payload": {...}}
+      {"inputs": {...full envelope...}}
+    """
+    current = _to_plain_obj(raw_payload)
+    for _ in range(5):
+        if not isinstance(current, dict):
+            return current
+        if "inputs" in current and len(current.keys()) == 1:
+            current = _to_plain_obj(current.get("inputs"))
+            continue
+        if "input" in current and len(current.keys()) == 1:
+            current = _to_plain_obj(current.get("input"))
+            continue
+        if "payload" in current and len(current.keys()) == 1:
+            current = _to_plain_obj(current.get("payload"))
+            continue
+        if "maestro_payload" in current and len(current.keys()) == 1:
+            current = _to_plain_obj(current.get("maestro_payload"))
+            continue
+        break
+    return current
+
+
 def _normalize_maestro_payload(raw_payload: Any) -> dict:
     """
     Accept either:
@@ -103,7 +131,7 @@ def _normalize_maestro_payload(raw_payload: Any) -> dict:
       3) wrapper {"maestro_payload": <dict-or-json-string>}
     and return a validated Maestro payload dict.
     """
-    payload = _to_plain_obj(raw_payload)
+    payload = _unwrap_envelope_wrappers(raw_payload)
 
     if not isinstance(payload, dict):
         raise ValueError(
@@ -143,6 +171,7 @@ class MaestroSinglePayloadState(BaseModel):
     maestro_payload: Any = Field(
         default=None,
         description="Full Maestro envelope JSON as object or JSON string.",
+        validation_alias=AliasChoices("maestro_payload", "inputs", "payload"),
     )
 
 
@@ -154,7 +183,7 @@ class AgenticTestingDeploymentFlow(Flow[MaestroSinglePayloadState]):
 
     @start()
     def run_from_maestro_contract(self) -> dict:
-        validated_payload = _normalize_maestro_payload({"maestro_payload": self.state.maestro_payload})
+        validated_payload = _normalize_maestro_payload(self.state.maestro_payload)
         return run_flow_from_maestro_payload(validated_payload)
 
 
