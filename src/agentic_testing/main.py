@@ -22,6 +22,42 @@ from agentic_testing.flow import run_flow_from_maestro_payload
 from agentic_testing.schemas.maestro_input import MaestroInput
 
 
+_ENVELOPE_KEYS = (
+    "run_request",
+    "scope",
+    "current_execution_artifact",
+    "previous_execution_artifact",
+    "evidence_store",
+    "storage",
+    "policy",
+    "requested_outputs",
+)
+
+
+def _try_parse_json_string(value: Any) -> Any:
+    if not isinstance(value, str):
+        return value
+    text = value.strip()
+    if not text:
+        return value
+    try:
+        return json.loads(text)
+    except json.JSONDecodeError:
+        return value
+
+
+def _extract_payload_from_split_fields(source: dict) -> dict:
+    """
+    Extract legacy split fields from CrewAI training UI into one Maestro envelope.
+    Supports each field as either object or JSON string.
+    """
+    candidate: dict = {}
+    for key in _ENVELOPE_KEYS:
+        if key in source:
+            candidate[key] = _try_parse_json_string(source.get(key))
+    return candidate
+
+
 def _normalize_maestro_payload(raw_payload: Any) -> dict:
     """
     Accept either:
@@ -30,21 +66,37 @@ def _normalize_maestro_payload(raw_payload: Any) -> dict:
       3) wrapper {"maestro_payload": <dict-or-json-string>}
     and return a validated Maestro payload dict.
     """
-    payload = raw_payload
-
-    if isinstance(payload, dict) and "maestro_payload" in payload and len(payload.keys()) == 1:
-        payload = payload["maestro_payload"]
-
-    if isinstance(payload, str):
-        payload = payload.strip()
-        if not payload:
-            raise ValueError("maestro_payload is empty.")
-        payload = json.loads(payload)
+    payload = _try_parse_json_string(raw_payload)
 
     if not isinstance(payload, dict):
-        raise ValueError("maestro_payload must be a JSON object or JSON string.")
+        raise ValueError(
+            "Input must be a JSON object/string OR {\"maestro_payload\": <json object/string>}."
+        )
 
-    return MaestroInput(**payload).model_dump()
+    wrapped_value = payload.get("maestro_payload")
+    wrapped_payload = _try_parse_json_string(wrapped_value)
+
+    candidate: dict = {}
+
+    # Preferred: one-field wrapper.
+    if isinstance(wrapped_payload, dict) and wrapped_payload:
+        candidate = wrapped_payload
+    # Direct full envelope passed at root.
+    elif all(k in payload for k in _ENVELOPE_KEYS):
+        candidate = {k: _try_parse_json_string(payload.get(k)) for k in _ENVELOPE_KEYS}
+    # Legacy split fields in UI (some or all keys present at root).
+    else:
+        candidate = _extract_payload_from_split_fields(payload)
+
+    if not candidate:
+        raise ValueError(
+            "No valid Maestro payload found. Provide either:\n"
+            "1) full envelope JSON,\n"
+            "2) {\"maestro_payload\": <full envelope>}, or\n"
+            "3) legacy split fields (run_request, scope, ... requested_outputs)."
+        )
+
+    return MaestroInput(**candidate).model_dump()
 
 
 class MaestroSinglePayloadState(BaseModel):
@@ -53,9 +105,18 @@ class MaestroSinglePayloadState(BaseModel):
     """
 
     maestro_payload: Any = Field(
-        default_factory=dict,
+        default=None,
         description="Full Maestro envelope JSON as object or JSON string.",
     )
+    # Backward compatibility if old deployment UI still sends split fields.
+    run_request: Any = Field(default_factory=dict)
+    scope: Any = Field(default_factory=dict)
+    current_execution_artifact: Any = Field(default_factory=dict)
+    previous_execution_artifact: Any = Field(default_factory=dict)
+    evidence_store: Any = Field(default_factory=dict)
+    storage: Any = Field(default_factory=dict)
+    policy: Any = Field(default_factory=dict)
+    requested_outputs: Any = Field(default_factory=dict)
 
 
 class AgenticTestingDeploymentFlow(Flow[MaestroSinglePayloadState]):
@@ -66,7 +127,18 @@ class AgenticTestingDeploymentFlow(Flow[MaestroSinglePayloadState]):
 
     @start()
     def run_from_maestro_contract(self) -> dict:
-        validated_payload = _normalize_maestro_payload(self.state.maestro_payload)
+        raw_inputs = {
+            "maestro_payload": self.state.maestro_payload,
+            "run_request": self.state.run_request,
+            "scope": self.state.scope,
+            "current_execution_artifact": self.state.current_execution_artifact,
+            "previous_execution_artifact": self.state.previous_execution_artifact,
+            "evidence_store": self.state.evidence_store,
+            "storage": self.state.storage,
+            "policy": self.state.policy,
+            "requested_outputs": self.state.requested_outputs,
+        }
+        validated_payload = _normalize_maestro_payload(raw_inputs)
         return run_flow_from_maestro_payload(validated_payload)
 
 
