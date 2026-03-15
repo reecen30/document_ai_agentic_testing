@@ -1,0 +1,22 @@
+# Python
+__pycache__/
+*.py[cod]
+*.pyo
+*.pyd
+
+# Virtual environments
+.venv/
+venv/
+
+# Build metadata
+*.egg-info/
+src/*.egg-info/
+build/
+dist/
+
+# Tooling caches
+.uv_cache/
+.pytest_cache/
+
+# Environment files
+.env
