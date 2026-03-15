@@ -14,6 +14,16 @@ from .runtime_logging import get_runtime_logger, log_event
 
 LOGGER = get_runtime_logger("llm_factory")
 
+
+def _first_env(*names: str) -> str | None:
+    """Return the first non-empty env var value from the provided names."""
+    for name in names:
+        value = os.getenv(name)
+        if value and value.strip():
+            return value.strip()
+    return None
+
+
 def _env_float(name: str, default: float) -> float:
     try:
         return float(os.getenv(name, str(default)))
@@ -117,22 +127,36 @@ def get_agent_llm(role: str) -> LLM:
     if provider == "groq":
         # Force native OpenAI provider path in CrewAI (no LiteLLM required).
         kwargs["provider"] = "openai"
-        groq_key = os.getenv("GROQ_API_KEY") or os.getenv("AGENTIC_LLM_API_KEY")
-        if groq_key:
-            kwargs["api_key"] = groq_key
+        groq_key = _first_env("GROQ_API_KEY", "AGENTIC_LLM_API_KEY", "OPENAI_API_KEY")
+        if not groq_key:
+            raise ValueError(
+                "Missing API key for Groq provider. Set one of: GROQ_API_KEY, "
+                "AGENTIC_LLM_API_KEY, or OPENAI_API_KEY."
+            )
+        kwargs["api_key"] = groq_key
     elif provider == "deepseek":
         kwargs["provider"] = "openai"
-        deepseek_key = os.getenv("DEEPSEEK_API_KEY") or os.getenv("AGENTIC_LLM_API_KEY")
-        if deepseek_key:
-            kwargs["api_key"] = deepseek_key
+        deepseek_key = _first_env("DEEPSEEK_API_KEY", "AGENTIC_LLM_API_KEY", "OPENAI_API_KEY")
+        if not deepseek_key:
+            raise ValueError(
+                "Missing API key for DeepSeek provider. Set one of: DEEPSEEK_API_KEY, "
+                "AGENTIC_LLM_API_KEY, or OPENAI_API_KEY."
+            )
+        kwargs["api_key"] = deepseek_key
     elif provider == "openai":
-        openai_key = os.getenv("OPENAI_API_KEY") or os.getenv("AGENTIC_LLM_API_KEY")
-        if openai_key:
-            kwargs["api_key"] = openai_key
+        openai_key = _first_env("OPENAI_API_KEY", "AGENTIC_LLM_API_KEY")
+        if not openai_key:
+            raise ValueError(
+                "Missing API key for OpenAI provider. Set one of: OPENAI_API_KEY or AGENTIC_LLM_API_KEY."
+            )
+        kwargs["api_key"] = openai_key
     elif provider in {"anthropic", "claude"}:
-        anthropic_key = os.getenv("ANTHROPIC_API_KEY") or os.getenv("AGENTIC_LLM_API_KEY")
-        if anthropic_key:
-            kwargs["api_key"] = anthropic_key
+        anthropic_key = _first_env("ANTHROPIC_API_KEY", "AGENTIC_LLM_API_KEY")
+        if not anthropic_key:
+            raise ValueError(
+                "Missing API key for Anthropic provider. Set one of: ANTHROPIC_API_KEY or AGENTIC_LLM_API_KEY."
+            )
+        kwargs["api_key"] = anthropic_key
     elif provider == "ollama":
         kwargs["provider"] = "openai"
         kwargs["api_key"] = os.getenv("OLLAMA_API_KEY", "ollama")
