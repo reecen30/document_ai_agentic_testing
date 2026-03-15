@@ -2,9 +2,9 @@
 #
 # Preferred for AMP/cloud deployment:
 #   AGENTIC_LLM_PROVIDER=groq
-#   AGENTIC_REASONING_MODEL=groq/llama-3.1-8b-instant
-#   AGENTIC_STRUCTURED_MODEL=groq/llama-3.1-8b-instant
-#   AGENTIC_CODE_MODEL=groq/llama-3.1-8b-instant
+#   AGENTIC_REASONING_MODEL=llama-3.1-8b-instant
+#   AGENTIC_STRUCTURED_MODEL=llama-3.1-8b-instant
+#   AGENTIC_CODE_MODEL=llama-3.1-8b-instant
 #
 # Local development fallback:
 #   AGENTIC_LLM_PROVIDER=ollama
@@ -22,21 +22,21 @@ roles:
   reasoning:
     model_env_var: "AGENTIC_REASONING_MODEL"
     default:
-      groq: "groq/llama-3.1-8b-instant"
-      openai: "openai/gpt-4o-mini"
-      anthropic: "anthropic/claude-3-5-haiku-latest"
-      ollama: "ollama/deepseek-r1:8b"
+      groq: "llama-3.1-8b-instant"
+      openai: "gpt-4o-mini"
+      anthropic: "claude-3-5-haiku-latest"
+      ollama: "deepseek-r1:8b"
   structured:
     model_env_var: "AGENTIC_STRUCTURED_MODEL"
     default:
-      groq: "groq/llama-3.1-8b-instant"
-      openai: "openai/gpt-4o-mini"
-      anthropic: "anthropic/claude-3-5-haiku-latest"
-      ollama: "ollama/qwen2.5:7b-instruct"
+      groq: "llama-3.1-8b-instant"
+      openai: "gpt-4o-mini"
+      anthropic: "claude-3-5-haiku-latest"
+      ollama: "qwen2.5:7b-instruct"
   code:
     model_env_var: "AGENTIC_CODE_MODEL"
     default:
-      groq: "groq/llama-3.1-8b-instant"
-      openai: "openai/gpt-4o-mini"
-      anthropic: "anthropic/claude-3-5-haiku-latest"
-      ollama: "ollama/qwen2.5-coder:7b-instruct"
+      groq: "llama-3.1-8b-instant"
+      openai: "gpt-4o-mini"
+      anthropic: "claude-3-5-haiku-latest"
+      ollama: "qwen2.5-coder:7b-instruct"

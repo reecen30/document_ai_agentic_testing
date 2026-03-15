@@ -29,9 +29,9 @@ Set these environment variables in AMP deployment settings:
 
 ```text
 AGENTIC_LLM_PROVIDER=groq
-AGENTIC_REASONING_MODEL=groq/llama-3.1-8b-instant
-AGENTIC_STRUCTURED_MODEL=groq/llama-3.1-8b-instant
-AGENTIC_CODE_MODEL=groq/llama-3.1-8b-instant
+AGENTIC_REASONING_MODEL=llama-3.1-8b-instant
+AGENTIC_STRUCTURED_MODEL=llama-3.1-8b-instant
+AGENTIC_CODE_MODEL=llama-3.1-8b-instant
 AGENTIC_LLM_TEMPERATURE=0.1
 GROQ_API_KEY=<your-groq-key>
 ```
@@ -40,9 +40,9 @@ If you prefer OpenAI:
 
 ```text
 AGENTIC_LLM_PROVIDER=openai
-AGENTIC_REASONING_MODEL=openai/gpt-4o-mini
-AGENTIC_STRUCTURED_MODEL=openai/gpt-4o-mini
-AGENTIC_CODE_MODEL=openai/gpt-4o-mini
+AGENTIC_REASONING_MODEL=gpt-4o-mini
+AGENTIC_STRUCTURED_MODEL=gpt-4o-mini
+AGENTIC_CODE_MODEL=gpt-4o-mini
 OPENAI_API_KEY=<your-openai-key>
 ```
 
