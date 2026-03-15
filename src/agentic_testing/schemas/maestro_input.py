@@ -69,6 +69,14 @@ class PolicyConfig(BaseModel):
     block_weighted_f1_drop: float = Field(default=0.05)
     block_empty_rate_increase: float = Field(default=0.03)
     block_exception_rate_increase: float = Field(default=0.02)
+    warn_confidence_below: float = Field(
+        default=0.60,
+        description="If final confidence is below this, PASS is downgraded to WARN.",
+    )
+    block_confidence_below: float = Field(
+        default=0.35,
+        description="If final confidence is below this, PASS/WARN is escalated to BLOCK.",
+    )
 
 
 class RequestedOutputs(BaseModel):

@@ -146,6 +146,76 @@ def _render_doc_type_rows(doc_type_breakdown: Dict[str, Any]) -> str:
     return "".join(rows)
 
 
+def _ratio(value: Any) -> float | None:
+    try:
+        num = float(value)
+    except (TypeError, ValueError):
+        return None
+    if num > 1.0 and num <= 100.0:
+        num = num / 100.0
+    return max(0.0, min(1.0, num))
+
+
+def _render_trend_chart(metrics: Dict[str, Any], trend_direction: str, trend_confidence: Any) -> str:
+    specs = [
+        ("Weighted F1", "weighted_f1_baseline", "weighted_f1_candidate"),
+        ("Classification Accuracy", "classification_accuracy_baseline", "classification_accuracy_candidate"),
+        ("Extraction Exact Match", "exact_match_rate_baseline", "exact_match_rate_candidate"),
+        ("Empty Rate (lower is better)", "empty_rate_baseline", "empty_rate_candidate"),
+    ]
+    rows: List[str] = []
+    for label, b_key, c_key in specs:
+        b = _ratio(metrics.get(b_key))
+        c = _ratio(metrics.get(c_key))
+        if b is None and c is None:
+            continue
+        b = 0.0 if b is None else b
+        c = 0.0 if c is None else c
+        rows.append(
+            "<div class='trend-row'>"
+            f"<div class='trend-label'>{_escape(label)}</div>"
+            "<div class='trend-bar-group'>"
+            "<div class='trend-bar-line'>"
+            "<span class='trend-series'>Baseline</span>"
+            "<div class='trend-track'>"
+            f"<div class='trend-fill trend-fill-base' style='width:{b * 100:.1f}%'></div>"
+            "</div>"
+            f"<span class='trend-value'>{b:.3f}</span>"
+            "</div>"
+            "<div class='trend-bar-line'>"
+            "<span class='trend-series'>Candidate</span>"
+            "<div class='trend-track'>"
+            f"<div class='trend-fill trend-fill-cand' style='width:{c * 100:.1f}%'></div>"
+            "</div>"
+            f"<span class='trend-value'>{c:.3f}</span>"
+            "</div>"
+            "</div>"
+            "</div>"
+        )
+
+    conf_text = "-"
+    try:
+        conf_text = f"{float(trend_confidence) * 100:.1f}%"
+    except (TypeError, ValueError):
+        pass
+
+    if not rows:
+        rows_html = "<p class='muted'>No metric series available for trend chart.</p>"
+    else:
+        rows_html = "".join(rows)
+
+    return (
+        "<div class='trend-summary'>"
+        f"<strong>Direction:</strong> {_escape(trend_direction)}"
+        " &nbsp;|&nbsp; "
+        f"<strong>Trend Confidence:</strong> {_escape(conf_text)}"
+        "</div>"
+        "<div class='trend-chart'>"
+        f"{rows_html}"
+        "</div>"
+    )
+
+
 def _normalize_events(events: List[Dict[str, Any]]) -> List[Dict[str, str]]:
     normal: List[Dict[str, str]] = []
     for event in events or []:
@@ -330,6 +400,18 @@ _HTML_TEMPLATE = """\
     .timeline-title {{ font-weight: 700; font-size: 0.86rem; }}
     .timeline-meta {{ font-size: 0.74rem; color: var(--muted); margin-top: 1px; }}
     .timeline-summary {{ font-size: 0.84rem; margin-top: 3px; }}
+    .trend-summary {{ font-size: 0.9rem; margin-bottom: 10px; }}
+    .trend-chart {{ display: grid; gap: 10px; }}
+    .trend-row {{ border: 1px solid var(--line); border-radius: 10px; padding: 10px; background: #fcfeff; }}
+    .trend-label {{ font-weight: 700; font-size: 0.85rem; margin-bottom: 8px; }}
+    .trend-bar-group {{ display: grid; gap: 6px; }}
+    .trend-bar-line {{ display: grid; grid-template-columns: 80px 1fr 50px; align-items: center; gap: 8px; }}
+    .trend-series {{ font-size: 0.76rem; color: var(--muted); }}
+    .trend-track {{ height: 10px; border-radius: 999px; background: #e8eef7; overflow: hidden; }}
+    .trend-fill {{ height: 100%; border-radius: 999px; }}
+    .trend-fill-base {{ background: #8aa2b6; }}
+    .trend-fill-cand {{ background: #1b8a4a; }}
+    .trend-value {{ font-family: Consolas, monospace; font-size: 0.78rem; color: #23384f; }}
     .footer {{ text-align: center; color: var(--muted); font-size: 0.78rem; margin-top: 16px; }}
     @media (max-width: 900px) {{
       .grid {{ grid-template-columns: repeat(2, minmax(150px, 1fr)); }}
@@ -370,6 +452,11 @@ _HTML_TEMPLATE = """\
       {agentic_actions_html}
       <h2 style="margin-top:16px;">Recommended Actions</h2>
       {recommended_actions_html}
+    </section>
+
+    <section class="section">
+      <h2>Trend Analyzer Chart</h2>
+      {trend_chart_html}
     </section>
 
     <section class="section">
@@ -528,7 +615,10 @@ class WriteHtmlReportTool(BaseTool):
             timeline_html = _render_timeline(events)
 
             routing_decision = _escape(run_state.get("routing_decision", "No routing decision provided."))
-            trend_direction = _escape(run_state.get("trend_direction", "unknown"))
+            trend_direction_raw = str(run_state.get("trend_direction", "unknown"))
+            trend_direction = _escape(trend_direction_raw)
+            trend_confidence = run_state.get("trend_confidence", 0.0)
+            trend_chart_html = _render_trend_chart(metrics, trend_direction_raw, trend_confidence)
             change_summary_text = _escape(run_state.get("change_summary_text", "No change summary available."))
 
             html = _HTML_TEMPLATE.format(
@@ -548,6 +638,7 @@ class WriteHtmlReportTool(BaseTool):
                 flow_strip_html=flow_strip_html,
                 routing_decision=routing_decision,
                 trend_direction=trend_direction,
+                trend_chart_html=trend_chart_html,
                 change_summary_text=change_summary_text,
                 agentic_actions_html=_render_bullets(agentic_actions, "No agentic action notes."),
                 recommended_actions_html=_render_bullets(recommended_actions, "No recommended actions."),

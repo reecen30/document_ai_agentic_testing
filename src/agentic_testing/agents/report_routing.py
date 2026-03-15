@@ -430,6 +430,7 @@ def _write_artifacts(packet: Dict[str, Any], state_dict: Dict[str, Any]) -> Dict
         "block_threshold": policy.get("block_weighted_f1_drop", 0.05),
         "routing_decision": _as_dict(packet.get("routing")).get("verdict_rationale", ""),
         "trend_direction": state_dict.get("trend_direction", "unknown"),
+        "trend_confidence": state_dict.get("trend_confidence", 0.0),
         "agentic_actions": _as_list(packet.get("agentic_actions_taken")),
         "recommended_actions": _as_list(packet.get("recommended_actions")),
         "execution_timeline": audit_events,
@@ -569,6 +570,10 @@ def run_report_routing(state_dict: Dict[str, Any]) -> Dict[str, Any]:
 
     block_threshold: float = _to_float(policy.get("block_weighted_f1_drop", 0.05), 0.05)
     warn_threshold: float = _to_float(policy.get("warn_weighted_f1_drop", 0.02), 0.02)
+    warn_confidence_below: float = _to_float(policy.get("warn_confidence_below", 0.60), 0.60)
+    block_confidence_below: float = _to_float(policy.get("block_confidence_below", 0.35), 0.35)
+    if block_confidence_below > warn_confidence_below:
+        block_confidence_below = warn_confidence_below
     critical_doc_types: List[str] = [str(x) for x in _as_list(policy.get("critical_doc_types"))]
 
     change_summary: Dict[str, Any] = _as_dict(state_dict.get("change_summary"))
@@ -691,11 +696,27 @@ def run_report_routing(state_dict: Dict[str, Any]) -> Dict[str, Any]:
     confidence = max(0.0, min(1.0, confidence))
     if final_verdict == "ERROR":
         confidence = min(confidence, 0.2)
+    confidence_gate_note = ""
+    if final_verdict != "ERROR":
+        if confidence < block_confidence_below and final_verdict in {"PASS", "WARN"}:
+            final_verdict = "BLOCK"
+            confidence_gate_note = (
+                f"Confidence-gated to BLOCK because overall_confidence={confidence:.2f} "
+                f"is below block_confidence_below={block_confidence_below:.2f}."
+            )
+        elif confidence < warn_confidence_below and final_verdict == "PASS":
+            final_verdict = "WARN"
+            confidence_gate_note = (
+                f"Confidence-gated to WARN because overall_confidence={confidence:.2f} "
+                f"is below warn_confidence_below={warn_confidence_below:.2f}."
+            )
 
     rationale = (
         _as_dict(llm_output.get("routing")).get("verdict_rationale")
         or f"Policy-evaluated verdict is {final_verdict} with weighted_f1_delta={weighted_f1_delta:.4f}."
     )
+    if confidence_gate_note:
+        rationale = f"{rationale} {confidence_gate_note}"
 
     routing = _default_routing(final_verdict, str(rationale))
     llm_routing = _as_dict(llm_output.get("routing"))
