@@ -46,6 +46,17 @@ AGENTIC_CODE_MODEL=gpt-4o-mini
 OPENAI_API_KEY=<your-openai-key>
 ```
 
+If you prefer DeepSeek:
+
+```text
+AGENTIC_LLM_PROVIDER=deepseek
+AGENTIC_REASONING_MODEL=deepseek-chat
+AGENTIC_STRUCTURED_MODEL=deepseek-chat
+AGENTIC_CODE_MODEL=deepseek-chat
+AGENTIC_LLM_TEMPERATURE=0.1
+DEEPSEEK_API_KEY=<your-deepseek-key>
+```
+
 ## 4) Inputs/Outputs for UiPath
 
 Use AMP REST pattern:

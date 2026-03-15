@@ -6,12 +6,18 @@
 #   AGENTIC_STRUCTURED_MODEL=llama-3.1-8b-instant
 #   AGENTIC_CODE_MODEL=llama-3.1-8b-instant
 #
+# DeepSeek option:
+#   AGENTIC_LLM_PROVIDER=deepseek
+#   AGENTIC_REASONING_MODEL=deepseek-chat
+#   AGENTIC_STRUCTURED_MODEL=deepseek-chat
+#   AGENTIC_CODE_MODEL=deepseek-chat
+#
 # Local development fallback:
 #   AGENTIC_LLM_PROVIDER=ollama
 #   OLLAMA_BASE_URL=http://localhost:11434
 #
 # API keys are provider specific:
-#   GROQ_API_KEY / OPENAI_API_KEY / ANTHROPIC_API_KEY
+#   GROQ_API_KEY / DEEPSEEK_API_KEY / OPENAI_API_KEY / ANTHROPIC_API_KEY
 
 runtime:
   provider_env_var: "AGENTIC_LLM_PROVIDER"
@@ -23,6 +29,7 @@ roles:
     model_env_var: "AGENTIC_REASONING_MODEL"
     default:
       groq: "llama-3.1-8b-instant"
+      deepseek: "deepseek-chat"
       openai: "gpt-4o-mini"
       anthropic: "claude-3-5-haiku-latest"
       ollama: "deepseek-r1:8b"
@@ -30,6 +37,7 @@ roles:
     model_env_var: "AGENTIC_STRUCTURED_MODEL"
     default:
       groq: "llama-3.1-8b-instant"
+      deepseek: "deepseek-chat"
       openai: "gpt-4o-mini"
       anthropic: "claude-3-5-haiku-latest"
       ollama: "qwen2.5:7b-instruct"
@@ -37,6 +45,7 @@ roles:
     model_env_var: "AGENTIC_CODE_MODEL"
     default:
       groq: "llama-3.1-8b-instant"
+      deepseek: "deepseek-chat"
       openai: "gpt-4o-mini"
       anthropic: "claude-3-5-haiku-latest"
       ollama: "qwen2.5-coder:7b-instruct"
