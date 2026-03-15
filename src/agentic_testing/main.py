@@ -14,17 +14,50 @@ import json
 import os
 import sys
 
-from agentic_testing.flow import AgenticTestingFlow, run_flow_from_maestro_payload
+from crewai.flow.flow import Flow, start
+from pydantic import BaseModel, Field
+
+from agentic_testing.flow import run_flow_from_maestro_payload
+from agentic_testing.schemas.maestro_input import MaestroInput
 
 
-class AgenticTestingDeploymentFlow(AgenticTestingFlow):
+class MaestroEnvelopeState(BaseModel):
     """
-    Deployment shim for CrewAI AMP flow auto-discovery.
-
-    AMP validates that a Flow subclass exists in this module.
+    Slim deployment state so AMP exposes only the intended input envelope fields.
     """
 
-    pass
+    run_request: dict = Field(default_factory=dict)
+    scope: dict = Field(default_factory=dict)
+    current_execution_artifact: dict = Field(default_factory=dict)
+    previous_execution_artifact: dict = Field(default_factory=dict)
+    evidence_store: dict = Field(default_factory=dict)
+    storage: dict = Field(default_factory=dict)
+    policy: dict = Field(default_factory=dict)
+    requested_outputs: dict = Field(default_factory=dict)
+
+
+class AgenticTestingDeploymentFlow(Flow[MaestroEnvelopeState]):
+    """
+    Deployment flow entry used by AMP.
+    Exposes a clean Maestro envelope and delegates execution to the real flow.
+    """
+
+    @start()
+    def run_from_maestro_contract(self) -> dict:
+        payload = {
+            "run_request": self.state.run_request,
+            "scope": self.state.scope,
+            "current_execution_artifact": self.state.current_execution_artifact,
+            "previous_execution_artifact": self.state.previous_execution_artifact,
+            "evidence_store": self.state.evidence_store,
+            "storage": self.state.storage,
+            "policy": self.state.policy,
+            "requested_outputs": self.state.requested_outputs,
+        }
+
+        # Validate envelope shape before deeper flow execution.
+        validated_payload = MaestroInput(**payload).model_dump()
+        return run_flow_from_maestro_payload(validated_payload)
 
 
 def kickoff(inputs=None):
