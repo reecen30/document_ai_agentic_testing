@@ -1,25 +1,27 @@
-"""
+﻿"""
 agents/report_routing.py
 
-ReportRouting Agent — produces the final executive summary, technical HTML report,
-routing decision packet, run report Excel workbook, trace pack, and audit log.
-Applies policy thresholds to make routing decisions (PASS/WARN/BLOCK).
-All outputs are grounded in prior agent findings only.
+ReportRouting Agent - produces final packet and writes demo-friendly artifacts.
 """
 
 import json
 import os
+import uuid
 from typing import Any, Dict, List, Optional
 
 from crewai import Agent, Crew, LLM, Task
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, ValidationError
 
 from agentic_testing.llm_factory import get_agent_llm
+from agentic_testing.tools.excel_writer import write_sheet
+from agentic_testing.tools.reporting_tools import (
+    write_audit_log_event,
+    write_execution_visual,
+    write_final_packet,
+    write_html_report,
+    write_trace_pack,
+)
 
-
-# ---------------------------------------------------------------------------
-# LLM factories
-# ---------------------------------------------------------------------------
 
 def get_reasoning_llm() -> LLM:
     return get_agent_llm("reasoning")
@@ -29,28 +31,22 @@ def get_structured_llm() -> LLM:
     return get_agent_llm("structured")
 
 
-# ---------------------------------------------------------------------------
-# Output schema
-# ---------------------------------------------------------------------------
-
 class RoutingDecision(BaseModel):
-    block_release: bool = Field(..., description="True if the release should be blocked")
-    request_human_review: bool = Field(..., description="True if human review is required")
-    open_defect: bool = Field(..., description="True if a defect should be opened")
-    notify_roles: List[str] = Field(
-        default_factory=list,
-        description="List of roles to notify: e.g., ['qa_lead', 'prompt_engineer', 'product_owner']",
-    )
-    verdict: str = Field(..., description="PASS | WARN | BLOCK")
-    verdict_rationale: str = Field(..., description="Plain-English explanation of the verdict")
+    block_release: bool = Field(...)
+    request_human_review: bool = Field(...)
+    open_defect: bool = Field(...)
+    notify_roles: List[str] = Field(default_factory=list)
+    verdict: str = Field(...)
+    verdict_rationale: str = Field(...)
 
 
 class ArtifactURIs(BaseModel):
-    report_html_uri: str = Field(default="", description="URI of the HTML report artifact")
-    run_json_uri: str = Field(default="", description="URI of the run JSON packet artifact")
-    excel_log_uri: str = Field(default="", description="URI of the Excel run log artifact")
-    audit_log_uri: str = Field(default="", description="URI of the audit log artifact")
-    trace_pack_uri: str = Field(default="", description="URI of the trace pack artifact")
+    report_html_uri: str = Field(default="")
+    execution_visual_uri: str = Field(default="")
+    run_json_uri: str = Field(default="")
+    excel_log_uri: str = Field(default="")
+    audit_log_uri: str = Field(default="")
+    trace_pack_uri: str = Field(default="")
 
 
 class AnalysisScope(BaseModel):
@@ -62,287 +58,497 @@ class AnalysisScope(BaseModel):
 
 
 class FinalRoutingOutput(BaseModel):
-    run_id: str = Field(..., description="Unique identifier for this analysis run")
-    status: str = Field(..., description="Run status: completed | failed | partial")
-    verdict: str = Field(..., description="PASS | WARN | BLOCK")
-    confidence: float = Field(..., ge=0.0, le=1.0, description="Overall confidence in the verdict")
-    analysis_scope: AnalysisScope = Field(..., description="Scope of the analysis performed")
-    change_summary: Dict[str, Any] = Field(
-        default_factory=dict, description="Summary of what changed (from IntakeDiff)"
-    )
-    summary_metrics: Dict[str, Any] = Field(
-        default_factory=dict, description="Aggregate metrics from RegressionHunter"
-    )
-    improvements: List[Dict[str, Any]] = Field(
-        default_factory=list, description="Improvement findings from RegressionHunter"
-    )
-    regressions: List[Dict[str, Any]] = Field(
-        default_factory=list, description="Regression findings from RegressionHunter"
-    )
-    hidden_risks: List[Dict[str, Any]] = Field(
-        default_factory=list, description="Hidden risk findings from RegressionHunter"
-    )
-    root_causes: List[Dict[str, Any]] = Field(
-        default_factory=list, description="Root causes from RootCause agent"
-    )
-    agentic_actions_taken: List[str] = Field(
-        default_factory=list,
-        description="Summary of actions taken by each agent during this run",
-    )
-    recommended_actions: List[str] = Field(
-        default_factory=list,
-        description="Prioritized list of recommended actions for humans to take",
-    )
-    patch_candidates: List[Dict[str, Any]] = Field(
-        default_factory=list, description="Patch candidates from PatchProposal agent"
-    )
-    routing: RoutingDecision = Field(..., description="Routing decision and verdict")
-    artifacts: ArtifactURIs = Field(..., description="URIs of generated artifacts")
+    run_id: str
+    status: str
+    verdict: str
+    confidence: float = Field(..., ge=0.0, le=1.0)
+    analysis_scope: AnalysisScope
+    change_summary: Dict[str, Any] = Field(default_factory=dict)
+    summary_metrics: Dict[str, Any] = Field(default_factory=dict)
+    improvements: List[Dict[str, Any]] = Field(default_factory=list)
+    regressions: List[Dict[str, Any]] = Field(default_factory=list)
+    hidden_risks: List[Dict[str, Any]] = Field(default_factory=list)
+    root_causes: List[Dict[str, Any]] = Field(default_factory=list)
+    agentic_actions_taken: List[str] = Field(default_factory=list)
+    recommended_actions: List[str] = Field(default_factory=list)
+    patch_candidates: List[Dict[str, Any]] = Field(default_factory=list)
+    routing: RoutingDecision
+    artifacts: ArtifactURIs
 
 
-# ---------------------------------------------------------------------------
-# Agent entry point
-# ---------------------------------------------------------------------------
+def _as_list(value: Any) -> List[Any]:
+    if isinstance(value, list):
+        return value
+    if value is None:
+        return []
+    return [value]
+
+
+def _as_dict(value: Any) -> Dict[str, Any]:
+    return value if isinstance(value, dict) else {}
+
+
+def _parse_json_or_empty(value: Any) -> Dict[str, Any]:
+    if isinstance(value, dict):
+        return value
+    if isinstance(value, str):
+        try:
+            parsed = json.loads(value)
+            if isinstance(parsed, dict):
+                return parsed
+        except json.JSONDecodeError:
+            return {}
+    return {}
+
+
+def _requested_output(requested_outputs: Any, key: str, default: bool = True) -> bool:
+    if isinstance(requested_outputs, dict):
+        return bool(requested_outputs.get(key, default))
+    if isinstance(requested_outputs, list):
+        return key in requested_outputs
+    return default
+
+
+def _severity(verdict: str) -> int:
+    ranking = {"PASS": 0, "WARN": 1, "BLOCK": 2}
+    return ranking.get(str(verdict).upper(), 0)
+
+
+def _compute_pre_verdict(
+    weighted_f1_delta: float,
+    warn_threshold: float,
+    block_threshold: float,
+    regression_findings: List[Dict[str, Any]],
+    critical_doc_types: List[str],
+) -> (str, bool):
+    verdict = "PASS"
+    if weighted_f1_delta < -block_threshold:
+        verdict = "BLOCK"
+    elif weighted_f1_delta < -warn_threshold:
+        verdict = "WARN"
+
+    critical_hit = any(
+        str((item or {}).get("doc_type", "")) in set(critical_doc_types)
+        for item in regression_findings
+        if isinstance(item, dict)
+    )
+    if critical_hit:
+        verdict = "BLOCK"
+
+    return verdict, critical_hit
+
+
+def _default_routing(verdict: str, rationale: str) -> Dict[str, Any]:
+    v = str(verdict).upper()
+    if v == "BLOCK":
+        return {
+            "block_release": True,
+            "request_human_review": True,
+            "open_defect": True,
+            "notify_roles": ["AI_LEAD", "DELIVERY_OWNER"],
+            "verdict": v,
+            "verdict_rationale": rationale,
+        }
+    if v == "WARN":
+        return {
+            "block_release": False,
+            "request_human_review": True,
+            "open_defect": False,
+            "notify_roles": ["AI_LEAD"],
+            "verdict": v,
+            "verdict_rationale": rationale,
+        }
+    return {
+        "block_release": False,
+        "request_human_review": False,
+        "open_defect": False,
+        "notify_roles": [],
+        "verdict": "PASS",
+        "verdict_rationale": rationale,
+    }
+
+
+def _build_agentic_actions(audit_events: List[Dict[str, Any]], rerun_count: int) -> List[str]:
+    actions: List[str] = []
+    for event in audit_events:
+        if not isinstance(event, dict):
+            continue
+        agent = str(event.get("agent_name", "Agent"))
+        summary = str(event.get("summary", "")).strip()
+        etype = str(event.get("event_type", "")).upper()
+        if summary and etype in {"COMPLETE", "FLOW_START"}:
+            actions.append(f"{agent}: {summary}")
+    if rerun_count > 0:
+        actions.append(f"Targeted reruns executed: {rerun_count}")
+    deduped: List[str] = []
+    seen = set()
+    for item in actions:
+        if item not in seen:
+            seen.add(item)
+            deduped.append(item)
+    return deduped[:10]
+
+
+def _build_recommended_actions(
+    root_causes: List[Dict[str, Any]],
+    patch_candidates: List[Dict[str, Any]],
+    recommended_experiments: List[str],
+    verdict: str,
+) -> List[str]:
+    items: List[str] = []
+    for cause in root_causes:
+        if isinstance(cause, dict) and cause.get("cause"):
+            items.append(f"Investigate root cause: {cause.get('cause')}")
+    for patch in patch_candidates:
+        if isinstance(patch, dict) and patch.get("description"):
+            items.append(f"Review patch candidate: {patch.get('description')}")
+    for exp in recommended_experiments:
+        items.append(f"Run follow-up experiment: {exp}")
+
+    verdict_upper = str(verdict).upper()
+    if verdict_upper == "BLOCK":
+        items.insert(0, "Pause release and start human review before promotion.")
+    elif verdict_upper == "WARN":
+        items.insert(0, "Proceed only with human sign-off and monitor critical doc types.")
+
+    if not items:
+        items = ["No immediate action required. Continue monitoring scheduled runs."]
+
+    deduped: List[str] = []
+    seen = set()
+    for item in items:
+        if item not in seen:
+            seen.add(item)
+            deduped.append(item)
+    return deduped[:8]
+
+
+def _build_artifact_uris(state_dict: Dict[str, Any], run_id: str) -> Dict[str, str]:
+    storage = _as_dict(state_dict.get("storage_config"))
+    namespace = str(storage.get("artifact_namespace", "agentic-testing"))
+    workspace_key = str(storage.get("run_workspace_key", run_id))
+    base = f"managed://{namespace}/{workspace_key}"
+    return {
+        "report_html_uri": f"{base}/report.html",
+        "execution_visual_uri": f"{base}/execution_flow.html",
+        "run_json_uri": f"{base}/latest_run.json",
+        "excel_log_uri": f"{base}/outputs/Run_Report.xlsx",
+        "audit_log_uri": f"{base}/logs/AgenticTesting_AuditLog.xlsx",
+        "trace_pack_uri": f"{base}/trace_pack.json",
+    }
+
+
+def _to_float(value: Any, default: float = 0.0) -> float:
+    try:
+        return float(value)
+    except (TypeError, ValueError):
+        return default
+
+
+def _write_excel_run_report(
+    workspace_path: str,
+    packet: Dict[str, Any],
+    audit_events: List[Dict[str, Any]],
+) -> str:
+    report_path = os.path.join(workspace_path, "outputs", "Run_Report.xlsx")
+    run_summary = [
+        {
+            "RunID": packet.get("run_id", ""),
+            "Status": packet.get("status", ""),
+            "Verdict": packet.get("verdict", ""),
+            "Confidence": packet.get("confidence", 0.0),
+            "TransactionsAnalyzed": _as_dict(packet.get("analysis_scope")).get("total_transactions", 0),
+            "DateFrom": _as_dict(packet.get("analysis_scope")).get("date_from", ""),
+            "DateTo": _as_dict(packet.get("analysis_scope")).get("date_to", ""),
+            "RegressionCount": len(_as_list(packet.get("regressions"))),
+            "ImprovementCount": len(_as_list(packet.get("improvements"))),
+            "HiddenRiskCount": len(_as_list(packet.get("hidden_risks"))),
+        }
+    ]
+    write_sheet._run(workbook_path=report_path, sheet_name="RunSummary", rows=run_summary, overwrite=True)
+
+    findings_rows: List[Dict[str, Any]] = []
+    for item in _as_list(packet.get("improvements")):
+        findings_rows.append({"Type": "improvement", "Finding": json.dumps(item, default=str)})
+    for item in _as_list(packet.get("regressions")):
+        findings_rows.append({"Type": "regression", "Finding": json.dumps(item, default=str)})
+    for item in _as_list(packet.get("hidden_risks")):
+        findings_rows.append({"Type": "hidden_risk", "Finding": json.dumps(item, default=str)})
+    if not findings_rows:
+        findings_rows = [{"Type": "info", "Finding": "No findings generated."}]
+    write_sheet._run(workbook_path=report_path, sheet_name="Findings", rows=findings_rows, overwrite=True)
+
+    timeline_rows: List[Dict[str, Any]] = []
+    for event in audit_events:
+        if not isinstance(event, dict):
+            continue
+        timeline_rows.append(
+            {
+                "Agent": event.get("agent_name", ""),
+                "EventType": event.get("event_type", ""),
+                "Timestamp": event.get("timestamp", ""),
+                "Summary": event.get("summary", ""),
+                "Status": event.get("status", ""),
+            }
+        )
+    if timeline_rows:
+        write_sheet._run(workbook_path=report_path, sheet_name="ExecutionTimeline", rows=timeline_rows, overwrite=True)
+
+    return report_path
+
+
+def _write_artifacts(packet: Dict[str, Any], state_dict: Dict[str, Any]) -> Dict[str, Any]:
+    run_id = str(state_dict.get("run_id", packet.get("run_id", "unknown_run")))
+    workspace_path = str(state_dict.get("workspace_path", "") or ".")
+    os.makedirs(workspace_path, exist_ok=True)
+
+    audit_events = _as_list(state_dict.get("audit_events"))
+
+    html_state = {
+        "run_id": run_id,
+        "workspace_path": workspace_path,
+        "verdict": packet.get("verdict", "UNKNOWN"),
+        "confidence": packet.get("confidence", 0.0),
+        "transaction_count": _as_dict(packet.get("analysis_scope")).get("total_transactions", 0),
+        "date_from": _as_dict(packet.get("analysis_scope")).get("date_from", ""),
+        "date_to": _as_dict(packet.get("analysis_scope")).get("date_to", ""),
+        "metrics": _as_dict(packet.get("summary_metrics")),
+        "improvements": _as_list(packet.get("improvements")),
+        "regressions": _as_list(packet.get("regressions")),
+        "hidden_risks": _as_list(packet.get("hidden_risks")),
+        "root_causes": _as_list(packet.get("root_causes")),
+        "patch_candidates": _as_list(packet.get("patch_candidates")),
+        "routing_decision": _as_dict(packet.get("routing")).get("verdict_rationale", ""),
+        "trend_direction": state_dict.get("trend_direction", "unknown"),
+        "agentic_actions": _as_list(packet.get("agentic_actions_taken")),
+        "recommended_actions": _as_list(packet.get("recommended_actions")),
+        "execution_timeline": audit_events,
+        "change_summary_text": json.dumps(_as_dict(packet.get("change_summary")), default=str)[:500],
+    }
+
+    write_html_report._run(run_state=html_state)
+    write_execution_visual._run(run_state=html_state)
+
+    excel_enabled = _requested_output(state_dict.get("requested_outputs"), "excel_log", True)
+    if excel_enabled:
+        _write_excel_run_report(workspace_path=workspace_path, packet=packet, audit_events=audit_events)
+
+    trace_state = {
+        "workspace_path": workspace_path,
+        "run_id": run_id,
+        "full_maestro_input": {
+            "run_request": state_dict.get("run_request", {}),
+            "scope": state_dict.get("scope", {}),
+            "current_artifact": state_dict.get("current_artifact", {}),
+            "previous_artifact": state_dict.get("previous_artifact", {}),
+            "policy": state_dict.get("policy", {}),
+            "requested_outputs": state_dict.get("requested_outputs", {}),
+        },
+        "selected_transactions": _as_dict(packet.get("analysis_scope")).get("transaction_ids", []),
+        "all_agent_outputs": {
+            "change_summary": state_dict.get("change_summary", {}),
+            "summary_metrics": state_dict.get("summary_metrics", {}),
+            "improvements": state_dict.get("improvement_findings", []),
+            "regressions": state_dict.get("regression_findings", []),
+            "hidden_risks": state_dict.get("hidden_risk_findings", []),
+            "root_causes": state_dict.get("root_causes", []),
+            "patch_candidates": state_dict.get("patch_candidates", []),
+            "trend_summary": state_dict.get("trend_summary", {}),
+            "confidence_assessment": state_dict.get("confidence_assessment", {}),
+        },
+        "rerun_requests": [state_dict.get("scope_expansion_request", {})] if state_dict.get("scope_expansion_request") else [],
+        "final_packet": packet,
+    }
+    write_trace_pack._run(run_state=trace_state)
+
+    write_final_packet._run(workspace_path=workspace_path, final_packet=packet)
+
+    audit_log_path = os.path.join(workspace_path, "logs", "AgenticTesting_AuditLog.xlsx")
+    write_audit_log_event._run(
+        audit_log_path=audit_log_path,
+        event_row={
+            "RunID": run_id,
+            "EventID": str(uuid.uuid4())[:8],
+            "AgentName": "ReportRoutingAgent",
+            "EventType": "COMPLETE",
+            "Summary": f"Final packet generated with verdict {packet.get('verdict', 'UNKNOWN')}",
+            "Status": "OK",
+        },
+    )
+
+    return packet
+
 
 def run_report_routing(state_dict: Dict[str, Any]) -> Dict[str, Any]:
-    """
-    Run the ReportRouting agent.
+    run_id: str = str(state_dict.get("run_id", "unknown_run"))
+    workspace_path: str = str(state_dict.get("workspace_path", ""))
+    policy: Dict[str, Any] = _as_dict(state_dict.get("policy"))
 
-    Args:
-        state_dict: Full FlowState dict containing outputs from all prior agents. Key fields:
-            - run_id (str)
-            - workspace_path (str)
-            - policy (dict): With keys block_weighted_f1_drop (float), warn_weighted_f1_drop (float),
-              critical_doc_types (list[str])
-            - requested_outputs (list[str]): e.g., ['html_report', 'excel_log', 'trace_pack']
-            - change_summary (dict): From IntakeDiff
-            - selected_transaction_ids (list[int]): From ScopePlanner
-            - selected_doc_types (list[str]): From ScopePlanner
-            - date_from (str), date_to (str): Scope period
-            - total_transactions (int): From EvidenceCollector
-            - summary_metrics (dict): From RegressionHunter
-            - improvement_findings (list): From RegressionHunter
-            - regression_findings (list): From RegressionHunter
-            - hidden_risk_findings (list): From RegressionHunter
-            - root_causes (list): From RootCause
-            - patch_candidates (list): From PatchProposal
-            - patch_rationale (str): From PatchProposal
-            - trend_direction (str): From TrendDrift
-            - drift_alerts (list): From TrendDrift
-            - confidence_assessment (dict): From Challenger
-            - targeted_rerun_summary (dict or None): From TargetedRerun
+    block_threshold: float = _to_float(policy.get("block_weighted_f1_drop", 0.05), 0.05)
+    warn_threshold: float = _to_float(policy.get("warn_weighted_f1_drop", 0.02), 0.02)
+    critical_doc_types: List[str] = [str(x) for x in _as_list(policy.get("critical_doc_types"))]
 
-    Returns:
-        dict conforming to FinalRoutingOutput schema, or error dict on failure.
-    """
-    from agentic_testing.tools.reporting_tools import (
-        write_html_report,
-        write_trace_pack,
-        write_final_packet,
-        write_audit_log_event,
-    )
-    from agentic_testing.tools.excel_writer import write_sheet, append_rows
-    from agentic_testing.tools.logging_tools import write_model_data_trace, log_agent_event
+    change_summary: Dict[str, Any] = _as_dict(state_dict.get("change_summary"))
+    selected_transaction_ids: List[int] = [int(x) for x in _as_list(state_dict.get("selected_transaction_ids")) if str(x).isdigit()]
+    selected_doc_types: List[str] = [str(x) for x in _as_list(state_dict.get("selected_doc_types"))]
+    date_from: str = str(state_dict.get("date_from", ""))
+    date_to: str = str(state_dict.get("date_to", ""))
 
-    # --- Extract all prior agent outputs from state_dict ---
-    run_id: str = state_dict.get("run_id", "unknown_run")
-    workspace_path: str = state_dict.get("workspace_path", "")
-    policy: Dict[str, Any] = state_dict.get("policy", {})
-    requested_outputs: List[str] = state_dict.get("requested_outputs", ["html_report", "excel_log"])
+    summary_metrics: Dict[str, Any] = _as_dict(state_dict.get("summary_metrics"))
+    improvement_findings: List[Dict[str, Any]] = [x for x in _as_list(state_dict.get("improvement_findings")) if isinstance(x, dict)]
+    regression_findings: List[Dict[str, Any]] = [x for x in _as_list(state_dict.get("regression_findings")) if isinstance(x, dict)]
+    hidden_risk_findings: List[Dict[str, Any]] = [x for x in _as_list(state_dict.get("hidden_risk_findings")) if isinstance(x, dict)]
+    root_causes: List[Dict[str, Any]] = [x for x in _as_list(state_dict.get("root_causes")) if isinstance(x, dict)]
+    patch_candidates: List[Dict[str, Any]] = [x for x in _as_list(state_dict.get("patch_candidates")) if isinstance(x, dict)]
 
-    block_threshold: float = policy.get("block_weighted_f1_drop", 0.05)
-    warn_threshold: float = policy.get("warn_weighted_f1_drop", 0.02)
-    critical_doc_types: List[str] = policy.get(
-        "critical_doc_types", ["IdentityDocument", "Passport", "ApplicationForm"]
+    confidence_assessment: Dict[str, Any] = _as_dict(state_dict.get("confidence_assessment"))
+    recommended_experiments: List[str] = [str(x) for x in _as_list(state_dict.get("recommended_experiments"))]
+    rerun_count: int = int(state_dict.get("rerun_count", 0) or 0)
+    audit_events: List[Dict[str, Any]] = [x for x in _as_list(state_dict.get("audit_events")) if isinstance(x, dict)]
+
+    total_transactions = int(
+        _as_dict(state_dict.get("evidence_summary")).get("total_transactions", len(_as_list(state_dict.get("case_bundles"))))
     )
 
-    change_summary: Dict[str, Any] = state_dict.get("change_summary", {})
-    selected_transaction_ids: List[int] = state_dict.get("selected_transaction_ids", [])
-    selected_doc_types: List[str] = state_dict.get("selected_doc_types", [])
-    date_from: str = state_dict.get("date_from", "")
-    date_to: str = state_dict.get("date_to", "")
-    total_transactions: int = state_dict.get("total_transactions", 0)
-
-    summary_metrics: Dict[str, Any] = state_dict.get("summary_metrics", {})
-    improvement_findings: list = state_dict.get("improvement_findings", [])
-    regression_findings: list = state_dict.get("regression_findings", [])
-    hidden_risk_findings: list = state_dict.get("hidden_risk_findings", [])
-
-    root_causes: list = state_dict.get("root_causes", [])
-    patch_candidates: list = state_dict.get("patch_candidates", [])
-    patch_rationale: str = state_dict.get("patch_rationale", "")
-
-    trend_direction: str = state_dict.get("trend_direction", "unknown")
-    drift_alerts: list = state_dict.get("drift_alerts", [])
-    confidence_assessment: Dict[str, Any] = state_dict.get("confidence_assessment", {})
-    targeted_rerun_summary: Optional[Dict[str, Any]] = state_dict.get("targeted_rerun_summary", None)
-
-    # Pre-compute verdict for the agent to use as guidance
-    weighted_f1_delta: float = summary_metrics.get("weighted_f1_delta", 0.0)
-    doc_type_breakdown: Dict[str, Any] = state_dict.get("doc_type_breakdown", {})
-
-    pre_computed_verdict = "PASS"
-    if weighted_f1_delta < -block_threshold:
-        pre_computed_verdict = "BLOCK"
-    elif weighted_f1_delta < -warn_threshold:
-        pre_computed_verdict = "WARN"
-
-    # Override to BLOCK if any critical doc type has a regression
-    critical_regression = False
-    for finding in regression_findings:
-        if finding.get("doc_type") in critical_doc_types:
-            critical_regression = True
-            pre_computed_verdict = "BLOCK"
-            break
-
-    llm = get_structured_llm()
-
-    prompt_file = os.path.join(os.path.dirname(__file__), "..", "prompts", "report_routing.txt")
-    backstory_extra = ""
-    if os.path.exists(prompt_file):
-        with open(prompt_file, "r", encoding="utf-8") as fh:
-            backstory_extra = fh.read()
-
-    agent = Agent(
-        role="Report and Routing Orchestrator",
-        goal=(
-            "Produce the final executive summary, technical HTML report, routing decision packet, "
-            "run report Excel workbook, trace pack, and audit log. Your outputs must be grounded "
-            "in prior agent findings only."
-        ),
-        backstory=(
-            "You are the final quality gate. You synthesize all prior findings into a clear, "
-            "actionable output for humans and Maestro. You apply policy thresholds to make routing "
-            "decisions (PASS/WARN/BLOCK). You are never optimistic beyond the evidence.\n\n"
-            + backstory_extra
-        ),
-        tools=[
-            write_html_report,
-            write_trace_pack,
-            write_final_packet,
-            write_audit_log_event,
-            write_sheet,
-            append_rows,
-            write_model_data_trace,
-            log_agent_event,
-        ],
-        llm=llm,
-        verbose=True,
-        max_iter=3,
+    weighted_f1_delta = _to_float(summary_metrics.get("weighted_f1_delta", 0.0), 0.0)
+    pre_verdict, critical_regression = _compute_pre_verdict(
+        weighted_f1_delta=weighted_f1_delta,
+        warn_threshold=warn_threshold,
+        block_threshold=block_threshold,
+        regression_findings=regression_findings,
+        critical_doc_types=critical_doc_types,
     )
 
-    task_description = f"""
-You are producing the final report and routing decision for run '{run_id}'.
-
---- POLICY THRESHOLDS ---
-block_weighted_f1_drop: {block_threshold} (block if F1 drops by more than this)
-warn_weighted_f1_drop: {warn_threshold} (warn if F1 drops by more than this)
-critical_doc_types: {critical_doc_types}
-
---- PRE-COMPUTED VERDICT GUIDANCE ---
-weighted_f1_delta: {weighted_f1_delta}
-critical_doc_type_regression_detected: {critical_regression}
-recommended_verdict: {pre_computed_verdict}
-
-VERDICT LOGIC:
-  IF weighted_f1_delta < -{block_threshold} → BLOCK
-  ELSE IF weighted_f1_delta < -{warn_threshold} → WARN
-  ELSE → PASS
-  OVERRIDE: If ANY critical doc type has a regression finding → BLOCK regardless of F1 delta
-
---- WORKSPACE ---
-workspace_path: {workspace_path}
-requested_outputs: {requested_outputs}
-
---- CHANGE SUMMARY ---
-{json.dumps(change_summary, indent=2)}
-
---- ANALYSIS SCOPE ---
-selected_transaction_ids: {selected_transaction_ids}
-selected_doc_types: {selected_doc_types}
-date_from: {date_from}
-date_to: {date_to}
-total_transactions: {total_transactions}
-
---- SUMMARY METRICS ---
-{json.dumps(summary_metrics, indent=2)}
-
---- IMPROVEMENTS ({len(improvement_findings)}) ---
-{json.dumps(improvement_findings, indent=2)}
-
---- REGRESSIONS ({len(regression_findings)}) ---
-{json.dumps(regression_findings, indent=2)}
-
---- HIDDEN RISKS ({len(hidden_risk_findings)}) ---
-{json.dumps(hidden_risk_findings, indent=2)}
-
---- ROOT CAUSES ---
-{json.dumps(root_causes, indent=2)}
-
---- PATCH CANDIDATES ---
-{json.dumps(patch_candidates, indent=2)}
-
---- TREND ---
-trend_direction: {trend_direction}
-drift_alerts: {json.dumps(drift_alerts, indent=2)}
-
---- CHALLENGER CONFIDENCE ---
-{json.dumps(confidence_assessment, indent=2)}
-
---- TARGETED RERUN SUMMARY ---
-{json.dumps(targeted_rerun_summary, indent=2) if targeted_rerun_summary else "(none)"}
-
-Your tasks:
-1. Apply the verdict logic above to determine the final verdict (PASS/WARN/BLOCK).
-2. Generate a human-readable verdict_rationale that cites specific evidence.
-3. Determine routing actions: block_release, request_human_review, open_defect, notify_roles.
-   - BLOCK → block_release=true, request_human_review=true, open_defect=true
-   - WARN → block_release=false, request_human_review=true, open_defect=false
-   - PASS → block_release=false, request_human_review=false, open_defect=false
-4. Build recommended_actions list (3–8 items) based on root causes and patch candidates.
-5. Build agentic_actions_taken list summarizing what each agent did.
-6. Generate artifacts using the tools:
-   a. Use `write_html_report` to generate the HTML report → store URI as managed://reports/{run_id}/report.html
-   b. Use `write_final_packet` to write the routing JSON packet → managed://packets/{run_id}/routing.json
-   c. Use `write_sheet` and `append_rows` to write the Excel run log → managed://excel/{run_id}/run_log.xlsx
-   d. Use `write_trace_pack` to write the trace pack → managed://traces/{run_id}/trace.zip
-   e. Use `write_audit_log_event` to log the final verdict event
-   f. Use `write_model_data_trace` to persist run metrics
-   g. Use `log_agent_event` to log the report routing completion
-7. Return a single valid JSON object matching the FinalRoutingOutput schema.
-
-CRITICAL: Only include findings that prior agents actually reported. Do not invent improvements,
-regressions, or root causes. Synthesize — do not fabricate.
-
-Return ONLY valid JSON. Do not include markdown fences, explanations, or commentary.
-"""
-
-    task = Task(
-        description=task_description,
-        expected_output=(
-            "A single valid JSON object conforming to FinalRoutingOutput with keys: run_id, "
-            "status, verdict, confidence, analysis_scope, change_summary, summary_metrics, "
-            "improvements, regressions, hidden_risks, root_causes, agentic_actions_taken, "
-            "recommended_actions, patch_candidates, routing (with block_release, "
-            "request_human_review, open_defect, notify_roles, verdict, verdict_rationale), "
-            "artifacts (with report_html_uri, run_json_uri, excel_log_uri, audit_log_uri, "
-            "trace_pack_uri)."
-        ),
-        agent=agent,
-        output_pydantic=FinalRoutingOutput,
-    )
-
-    crew = Crew(agents=[agent], tasks=[task], verbose=True)
-    result = crew.kickoff()
+    llm_output: Dict[str, Any] = {}
+    llm_error: Optional[str] = None
 
     try:
+        llm = get_structured_llm()
+        prompt_file = os.path.join(os.path.dirname(__file__), "..", "prompts", "report_routing.txt")
+        backstory_extra = ""
+        if os.path.exists(prompt_file):
+            with open(prompt_file, "r", encoding="utf-8") as fh:
+                backstory_extra = fh.read()
+
+        agent = Agent(
+            role="Report and Routing Orchestrator",
+            goal=(
+                "Synthesize findings into a final routing decision and produce a valid packet."
+            ),
+            backstory=(
+                "You are the final quality gate. Use evidence only and keep decisions policy-aligned.\n\n"
+                + backstory_extra
+            ),
+            tools=[
+                write_html_report,
+                write_execution_visual,
+                write_trace_pack,
+                write_final_packet,
+                write_audit_log_event,
+                write_sheet,
+            ],
+            llm=llm,
+            verbose=True,
+            max_iter=2,
+        )
+
+        task = Task(
+            description=(
+                f"Run ID: {run_id}. "
+                f"Policy thresholds block={block_threshold}, warn={warn_threshold}. "
+                f"weighted_f1_delta={weighted_f1_delta}. "
+                f"critical_regression={critical_regression}. "
+                "Return valid JSON for FinalRoutingOutput only."
+            ),
+            expected_output="A valid FinalRoutingOutput JSON object.",
+            agent=agent,
+            output_pydantic=FinalRoutingOutput,
+        )
+
+        result = Crew(agents=[agent], tasks=[task], verbose=True).kickoff()
         if hasattr(result, "pydantic") and result.pydantic is not None:
-            return result.pydantic.model_dump()
-        raw = result.raw if hasattr(result, "raw") else str(result)
-        return json.loads(raw) if isinstance(raw, str) else raw
-    except (json.JSONDecodeError, AttributeError) as exc:
-        return {
-            "error": "Failed to parse agent output",
-            "detail": str(exc),
-            "raw": str(result),
-        }
+            llm_output = result.pydantic.model_dump()
+        else:
+            raw = result.raw if hasattr(result, "raw") else str(result)
+            llm_output = _parse_json_or_empty(raw)
+    except Exception as exc:
+        llm_error = str(exc)
+        llm_output = {}
+
+    llm_verdict = str(llm_output.get("verdict", pre_verdict)).upper()
+    if llm_verdict not in {"PASS", "WARN", "BLOCK"}:
+        llm_verdict = pre_verdict
+
+    final_verdict = pre_verdict if _severity(pre_verdict) >= _severity(llm_verdict) else llm_verdict
+
+    confidence = _to_float(
+        llm_output.get("confidence", confidence_assessment.get("overall_confidence", 0.0)),
+        _to_float(confidence_assessment.get("overall_confidence", 0.0), 0.0),
+    )
+    confidence = max(0.0, min(1.0, confidence))
+
+    rationale = (
+        _as_dict(llm_output.get("routing")).get("verdict_rationale")
+        or f"Policy-evaluated verdict is {final_verdict} with weighted_f1_delta={weighted_f1_delta:.4f}."
+    )
+
+    routing = _default_routing(final_verdict, str(rationale))
+    llm_routing = _as_dict(llm_output.get("routing"))
+    if llm_routing:
+        routing["notify_roles"] = [str(x) for x in _as_list(llm_routing.get("notify_roles", routing["notify_roles"]))]
+        routing["verdict_rationale"] = str(llm_routing.get("verdict_rationale", routing["verdict_rationale"]))
+
+    agentic_actions = [str(x) for x in _as_list(llm_output.get("agentic_actions_taken"))]
+    if not agentic_actions:
+        agentic_actions = _build_agentic_actions(audit_events=audit_events, rerun_count=rerun_count)
+
+    recommended_actions = [str(x) for x in _as_list(llm_output.get("recommended_actions"))]
+    if not recommended_actions:
+        recommended_actions = _build_recommended_actions(
+            root_causes=root_causes,
+            patch_candidates=patch_candidates,
+            recommended_experiments=recommended_experiments,
+            verdict=final_verdict,
+        )
+
+    packet: Dict[str, Any] = {
+        "run_id": run_id,
+        "status": "completed",
+        "verdict": final_verdict,
+        "confidence": confidence,
+        "analysis_scope": {
+            "transaction_ids": selected_transaction_ids,
+            "doc_types": selected_doc_types,
+            "date_from": date_from,
+            "date_to": date_to,
+            "total_transactions": total_transactions,
+        },
+        "change_summary": change_summary,
+        "summary_metrics": summary_metrics,
+        "improvements": improvement_findings,
+        "regressions": regression_findings,
+        "hidden_risks": hidden_risk_findings,
+        "root_causes": root_causes,
+        "agentic_actions_taken": agentic_actions,
+        "recommended_actions": recommended_actions,
+        "patch_candidates": patch_candidates,
+        "routing": routing,
+        "artifacts": _build_artifact_uris(state_dict=state_dict, run_id=run_id),
+    }
+
+    if llm_error:
+        packet.setdefault("routing", {})
+        packet["routing"]["verdict_rationale"] = (
+            str(packet["routing"].get("verdict_rationale", ""))
+            + f" (LLM synthesis warning: {llm_error})"
+        )
+
+    packet = _write_artifacts(packet=packet, state_dict=state_dict)
+
+    try:
+        validated = FinalRoutingOutput(**packet)
+        return validated.model_dump()
+    except ValidationError as exc:
+        packet["error"] = "final_output_validation_failed"
+        packet["detail"] = exc.errors()
+        return packet

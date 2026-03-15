@@ -19,9 +19,12 @@ Orchestration order:
 """
 from __future__ import annotations
 
+import base64
 import datetime
 import json
+import mimetypes
 import os
+from pathlib import Path
 from typing import Any, Dict
 
 from crewai.flow.flow import Flow, listen, router, start
@@ -58,6 +61,94 @@ def _resolve_evidence_store_path(state: FlowState) -> str:
 
 def _resolve_audit_log_path(workspace_path: str) -> str:
     return os.path.join(workspace_path, "logs", "AgenticTesting_AuditLog.xlsx")
+
+
+def _encode_file_base64(path: Path) -> str:
+    with open(path, "rb") as f:
+        return base64.b64encode(f.read()).decode("ascii")
+
+
+def _collect_artifact_candidates(workspace_path: str) -> Dict[str, Path]:
+    ws = Path(workspace_path)
+    candidates: Dict[str, Path] = {
+        "report_html": ws / "report.html",
+        "execution_visual": ws / "execution_flow.html",
+        "run_json": ws / "latest_run.json",
+        "trace_pack": ws / "trace_pack.json",
+        "audit_log_excel": ws / "logs" / "AgenticTesting_AuditLog.xlsx",
+    }
+
+    optional_candidates = {
+        "report_pdf": [
+            ws / "outputs" / "Run_Report.pdf",
+            ws / "outputs" / "run_report.pdf",
+            ws / "report.pdf",
+        ],
+        "excel_log": [
+            ws / "outputs" / "Run_REPORT.xlsx",
+            ws / "outputs" / "Run_Report.xlsx",
+            ws / "outputs" / "run_log.xlsx",
+            ws / "run_log.xlsx",
+        ],
+    }
+    for key, options in optional_candidates.items():
+        for option in options:
+            if option.exists():
+                candidates[key] = option
+                break
+
+    return {k: p for k, p in candidates.items() if p.exists() and p.is_file()}
+
+
+def _inject_artifact_base64(packet: Dict[str, Any], workspace_path: str) -> Dict[str, Any]:
+    """
+    Add base64-encoded artifact content under `artifacts.embedded_files`.
+    """
+    if not workspace_path or not isinstance(packet, dict):
+        return packet
+
+    embed_enabled = os.getenv("AGENTIC_EMBED_ARTIFACTS_BASE64", "true").strip().lower() in {"1", "true", "yes", "y"}
+    if not embed_enabled:
+        return packet
+
+    try:
+        max_bytes = int(os.getenv("AGENTIC_MAX_EMBED_FILE_BYTES", str(5 * 1024 * 1024)))
+    except ValueError:
+        max_bytes = 5 * 1024 * 1024
+
+    artifacts = packet.get("artifacts")
+    if not isinstance(artifacts, dict):
+        artifacts = {}
+
+    embedded_files: Dict[str, Dict[str, Any]] = {}
+    for key, file_path in _collect_artifact_candidates(workspace_path).items():
+        file_size = file_path.stat().st_size
+        mime_type = mimetypes.guess_type(file_path.name)[0] or "application/octet-stream"
+
+        if file_size > max_bytes:
+            embedded_files[key] = {
+                "filename": file_path.name,
+                "mime_type": mime_type,
+                "encoding": "base64",
+                "data": None,
+                "size_bytes": file_size,
+                "skipped": True,
+                "reason": f"File exceeds AGENTIC_MAX_EMBED_FILE_BYTES ({max_bytes}).",
+            }
+            continue
+
+        embedded_files[key] = {
+            "filename": file_path.name,
+            "mime_type": mime_type,
+            "encoding": "base64",
+            "data": _encode_file_base64(file_path),
+            "size_bytes": file_size,
+            "skipped": False,
+        }
+
+    artifacts["embedded_files"] = embedded_files
+    packet["artifacts"] = artifacts
+    return packet
 
 
 class AgenticTestingFlow(Flow[FlowState]):
@@ -397,6 +488,7 @@ class AgenticTestingFlow(Flow[FlowState]):
                 "evidence_store_config": self.state.evidence_store_config,
             }
         )
+        result = _inject_artifact_base64(result, self.state.workspace_path or "")
 
         self.state.final_run_packet = result
         self.state.add_audit_event("ReportRoutingAgent", "COMPLETE", f"Verdict: {result.get('verdict')}")
