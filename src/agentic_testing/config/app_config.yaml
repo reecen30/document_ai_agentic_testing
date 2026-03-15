@@ -1,0 +1,66 @@
+# Application Configuration
+app:
+  name: "document_ai_agentic_testing"
+  version: "1.0.0"
+  log_level: "INFO"
+
+workspace:
+  base_path: null  # Set via env var WORKSPACE_BASE_PATH or Maestro storage config
+  workspaces_dir: "workspaces"
+  logs_dir: "logs"
+
+evidence_store:
+  default_ref: "DocumentAI_EvidenceStore"
+  default_path: null  # Set via env var EVIDENCE_STORE_PATH
+
+excel:
+  evidence_store_filename: "DocumentAI_EvidenceStore.xlsx"
+  audit_log_filename: "AgenticTesting_AuditLog.xlsx"
+  run_report_filename_template: "Run_{run_id}_Report.xlsx"
+
+flow:
+  max_reruns: 3
+  default_time_budget_minutes: 20
+  default_max_initial_transactions: 20
+  default_max_total_transactions: 100
+
+reporting:
+  pdf_enabled: true
+  html_enabled: true
+  excel_enabled: true
+  json_enabled: true
+  trace_pack_enabled: true
+
+policy:
+  critical_doc_types:
+    - IdentityDocument
+    - Passport
+    - ApplicationForm
+  warn_weighted_f1_drop: 0.02
+  block_weighted_f1_drop: 0.05
+  block_empty_rate_increase: 0.03
+  block_exception_rate_increase: 0.02
+
+agent_names:
+  intake_diff: "Agentic_IntakeDiff"
+  scope_planner: "Agentic_ScopePlanner"
+  evidence_collector: "Agentic_EvidenceCollector"
+  regression_hunter: "Agentic_RegressionHunter"
+  challenger: "Agentic_Challenger"
+  targeted_rerun: "Agentic_TargetedRerun"
+  trend_drift: "Agentic_TrendDrift"
+  root_cause: "Agentic_RootCause"
+  patch_proposal: "Agentic_PatchProposal"
+  report_routing: "Agentic_ReportRouting"
+
+model_ids:
+  intake_diff: 9001
+  scope_planner: 9002
+  evidence_collector: 9003
+  regression_hunter: 9004
+  challenger: 9005
+  targeted_rerun: 9006
+  trend_drift: 9007
+  root_cause: 9008
+  patch_proposal: 9009
+  report_routing: 9010

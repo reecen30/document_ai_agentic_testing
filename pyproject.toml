@@ -1,0 +1,37 @@
+[build-system]
+requires = ["setuptools>=70.0.0", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "document-ai-agentic-testing"
+version = "1.0.0"
+description = "Automated agentic regression-testing framework for document AI model releases"
+requires-python = ">=3.11"
+dependencies = [
+    "crewai>=0.80.0",
+    "crewai-tools>=0.20.0",
+    "langchain-community>=0.3.0",
+    "langchain-ollama>=0.2.0",
+    "openpyxl>=3.1.2",
+    "pandas>=2.2.0",
+    "pydantic>=2.7.0",
+    "python-dotenv>=1.0.0",
+    "jinja2>=3.1.4",
+    "reportlab>=4.2.0",
+    "PyYAML>=6.0.1",
+    "httpx>=0.27.0",
+    "fastapi>=0.115.0",
+    "uvicorn>=0.30.0",
+]
+
+[project.scripts]
+agentic-testing = "agentic_testing.main:main"
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+[tool.setuptools.package-data]
+"agentic_testing" = ["prompts/*.txt", "config/*.yaml"]
+
+[tool.crewai]
+type = "flow"

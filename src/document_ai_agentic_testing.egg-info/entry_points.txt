@@ -1,0 +1,2 @@
+[console_scripts]
+agentic-testing = agentic_testing.main:main

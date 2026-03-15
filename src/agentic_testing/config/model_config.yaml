@@ -1,0 +1,42 @@
+# Model configuration reference (runtime values are driven by environment variables).
+#
+# Preferred for AMP/cloud deployment:
+#   AGENTIC_LLM_PROVIDER=groq
+#   AGENTIC_REASONING_MODEL=groq/llama-3.1-8b-instant
+#   AGENTIC_STRUCTURED_MODEL=groq/llama-3.1-8b-instant
+#   AGENTIC_CODE_MODEL=groq/llama-3.1-8b-instant
+#
+# Local development fallback:
+#   AGENTIC_LLM_PROVIDER=ollama
+#   OLLAMA_BASE_URL=http://localhost:11434
+#
+# API keys are provider specific:
+#   GROQ_API_KEY / OPENAI_API_KEY / ANTHROPIC_API_KEY
+
+runtime:
+  provider_env_var: "AGENTIC_LLM_PROVIDER"
+  temperature_env_var: "AGENTIC_LLM_TEMPERATURE"
+  base_url_env_var: "AGENTIC_LLM_BASE_URL"
+
+roles:
+  reasoning:
+    model_env_var: "AGENTIC_REASONING_MODEL"
+    default:
+      groq: "groq/llama-3.1-8b-instant"
+      openai: "openai/gpt-4o-mini"
+      anthropic: "anthropic/claude-3-5-haiku-latest"
+      ollama: "ollama/deepseek-r1:8b"
+  structured:
+    model_env_var: "AGENTIC_STRUCTURED_MODEL"
+    default:
+      groq: "groq/llama-3.1-8b-instant"
+      openai: "openai/gpt-4o-mini"
+      anthropic: "anthropic/claude-3-5-haiku-latest"
+      ollama: "ollama/qwen2.5:7b-instruct"
+  code:
+    model_env_var: "AGENTIC_CODE_MODEL"
+    default:
+      groq: "groq/llama-3.1-8b-instant"
+      openai: "openai/gpt-4o-mini"
+      anthropic: "anthropic/claude-3-5-haiku-latest"
+      ollama: "ollama/qwen2.5-coder:7b-instruct"
