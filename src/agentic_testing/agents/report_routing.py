@@ -13,6 +13,7 @@ from crewai import Agent, Crew, LLM, Task
 from pydantic import BaseModel, Field, ValidationError
 
 from agentic_testing.llm_factory import get_agent_llm
+from agentic_testing.runtime_logging import get_runtime_logger, log_event
 from agentic_testing.tools.excel_writer import write_sheet
 from agentic_testing.tools.reporting_tools import (
     write_audit_log_event,
@@ -21,6 +22,8 @@ from agentic_testing.tools.reporting_tools import (
     write_html_report,
     write_trace_pack,
 )
+
+LOGGER = get_runtime_logger("report_routing")
 
 
 def get_reasoning_llm() -> LLM:
@@ -335,12 +338,61 @@ def _write_artifacts(packet: Dict[str, Any], state_dict: Dict[str, Any]) -> Dict
         "change_summary_text": json.dumps(_as_dict(packet.get("change_summary")), default=str)[:500],
     }
 
-    write_html_report._run(run_state=html_state)
-    write_execution_visual._run(run_state=html_state)
+    artifact_errors: List[str] = []
+
+    def _record_tool_result(tool_name: str, raw_result: Any) -> None:
+        parsed = _parse_json_or_empty(raw_result)
+        if parsed.get("error"):
+            msg = f"{tool_name} error: {parsed.get('error')}"
+            artifact_errors.append(msg)
+            log_event(
+                LOGGER,
+                event="artifact_tool_error",
+                level="ERROR",
+                run_id=run_id,
+                stage=tool_name,
+                workspace_path=workspace_path,
+                context={"tool_result": parsed},
+            )
+        else:
+            log_event(
+                LOGGER,
+                event="artifact_tool_ok",
+                level="INFO",
+                run_id=run_id,
+                stage=tool_name,
+                workspace_path=workspace_path,
+                context={"tool_result": parsed},
+            )
+
+    _record_tool_result("write_html_report", write_html_report._run(run_state=html_state))
+    _record_tool_result("write_execution_visual", write_execution_visual._run(run_state=html_state))
 
     excel_enabled = _requested_output(state_dict.get("requested_outputs"), "excel_log", True)
     if excel_enabled:
-        _write_excel_run_report(workspace_path=workspace_path, packet=packet, audit_events=audit_events)
+        try:
+            report_path = _write_excel_run_report(workspace_path=workspace_path, packet=packet, audit_events=audit_events)
+            log_event(
+                LOGGER,
+                event="artifact_tool_ok",
+                level="INFO",
+                run_id=run_id,
+                stage="write_excel_run_report",
+                workspace_path=workspace_path,
+                context={"path": report_path},
+            )
+        except Exception as exc:
+            artifact_errors.append(f"write_excel_run_report error: {exc}")
+            log_event(
+                LOGGER,
+                event="artifact_tool_error",
+                level="ERROR",
+                run_id=run_id,
+                stage="write_excel_run_report",
+                workspace_path=workspace_path,
+                context={},
+                exc=exc,
+            )
 
     trace_state = {
         "workspace_path": workspace_path,
@@ -368,12 +420,14 @@ def _write_artifacts(packet: Dict[str, Any], state_dict: Dict[str, Any]) -> Dict
         "rerun_requests": [state_dict.get("scope_expansion_request", {})] if state_dict.get("scope_expansion_request") else [],
         "final_packet": packet,
     }
-    write_trace_pack._run(run_state=trace_state)
+    _record_tool_result("write_trace_pack", write_trace_pack._run(run_state=trace_state))
 
-    write_final_packet._run(workspace_path=workspace_path, final_packet=packet)
+    _record_tool_result("write_final_packet", write_final_packet._run(workspace_path=workspace_path, final_packet=packet))
 
     audit_log_path = os.path.join(workspace_path, "logs", "AgenticTesting_AuditLog.xlsx")
-    write_audit_log_event._run(
+    _record_tool_result(
+        "write_audit_log_event",
+        write_audit_log_event._run(
         audit_log_path=audit_log_path,
         event_row={
             "RunID": run_id,
@@ -383,7 +437,12 @@ def _write_artifacts(packet: Dict[str, Any], state_dict: Dict[str, Any]) -> Dict
             "Summary": f"Final packet generated with verdict {packet.get('verdict', 'UNKNOWN')}",
             "Status": "OK",
         },
+        ),
     )
+
+    if artifact_errors:
+        packet.setdefault("errors", [])
+        packet["errors"].extend(artifact_errors)
 
     return packet
 
@@ -391,6 +450,19 @@ def _write_artifacts(packet: Dict[str, Any], state_dict: Dict[str, Any]) -> Dict
 def run_report_routing(state_dict: Dict[str, Any]) -> Dict[str, Any]:
     run_id: str = str(state_dict.get("run_id", "unknown_run"))
     workspace_path: str = str(state_dict.get("workspace_path", ""))
+    log_event(
+        LOGGER,
+        event="report_routing_start",
+        level="INFO",
+        run_id=run_id,
+        stage="run_report_routing",
+        workspace_path=workspace_path or None,
+        context={
+            "has_policy": isinstance(state_dict.get("policy"), dict),
+            "requested_outputs_type": type(state_dict.get("requested_outputs")).__name__,
+            "error_log_count": len(_as_list(state_dict.get("error_log"))),
+        },
+    )
     policy: Dict[str, Any] = _as_dict(state_dict.get("policy"))
 
     block_threshold: float = _to_float(policy.get("block_weighted_f1_drop", 0.05), 0.05)
@@ -486,6 +558,16 @@ def run_report_routing(state_dict: Dict[str, Any]) -> Dict[str, Any]:
     except Exception as exc:
         llm_error = str(exc)
         llm_output = {}
+        log_event(
+            LOGGER,
+            event="report_routing_llm_synthesis_failed",
+            level="ERROR",
+            run_id=run_id,
+            stage="run_report_routing",
+            workspace_path=workspace_path or None,
+            context={"pre_verdict": pre_verdict},
+            exc=exc,
+        )
 
     llm_verdict = str(llm_output.get("verdict", pre_verdict)).upper()
     if llm_verdict not in {"PASS", "WARN", "BLOCK", "ERROR"}:
@@ -563,12 +645,52 @@ def run_report_routing(state_dict: Dict[str, Any]) -> Dict[str, Any]:
         packet.setdefault("errors", [])
         packet["errors"].append(f"LLM synthesis warning: {llm_error}")
 
-    packet = _write_artifacts(packet=packet, state_dict=state_dict)
+    try:
+        packet = _write_artifacts(packet=packet, state_dict=state_dict)
+    except Exception as exc:
+        log_event(
+            LOGGER,
+            event="report_routing_artifact_write_failed",
+            level="ERROR",
+            run_id=run_id,
+            stage="run_report_routing",
+            workspace_path=workspace_path or None,
+            context={},
+            exc=exc,
+        )
+        packet.setdefault("errors", [])
+        packet["errors"].append(f"Artifact write failure: {exc.__class__.__name__}: {exc}")
+        packet["status"] = "failed"
+        packet["verdict"] = "ERROR"
+        packet["routing"] = _default_routing("ERROR", "Artifact writing failed; see errors list.")
 
     try:
         validated = FinalRoutingOutput(**packet)
+        log_event(
+            LOGGER,
+            event="report_routing_complete",
+            level="INFO",
+            run_id=run_id,
+            stage="run_report_routing",
+            workspace_path=workspace_path or None,
+            context={
+                "verdict": validated.verdict,
+                "status": validated.status,
+                "error_count": len(_as_list(packet.get("errors"))),
+            },
+        )
         return validated.model_dump()
     except ValidationError as exc:
         packet["error"] = "final_output_validation_failed"
         packet["detail"] = exc.errors()
+        log_event(
+            LOGGER,
+            event="report_routing_output_validation_failed",
+            level="ERROR",
+            run_id=run_id,
+            stage="run_report_routing",
+            workspace_path=workspace_path or None,
+            context={"error_count": len(exc.errors())},
+            exc=exc,
+        )
         return packet

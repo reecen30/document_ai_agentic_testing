@@ -75,11 +75,29 @@ class FlowState(BaseModel):
 
     def add_audit_event(self, agent_name: str, event_type: str, summary: str, status: str = "OK") -> None:
         import datetime
-        self.audit_events.append({
+        event = {
             "run_id": self.run_id,
             "agent_name": agent_name,
             "event_type": event_type,
             "timestamp": datetime.datetime.utcnow().isoformat(),
             "summary": summary,
             "status": status,
-        })
+        }
+        self.audit_events.append(event)
+        # Runtime diagnostics should never break flow execution.
+        try:
+            from agentic_testing.runtime_logging import get_runtime_logger, log_event
+
+            logger = get_runtime_logger("flow_audit")
+            level = "ERROR" if str(status).upper() == "ERROR" else "INFO"
+            log_event(
+                logger,
+                event="flow_audit_event",
+                level=level,
+                run_id=self.run_id,
+                stage=agent_name,
+                workspace_path=self.workspace_path,
+                context=event,
+            )
+        except Exception:
+            pass

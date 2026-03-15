@@ -20,6 +20,7 @@ from crewai.flow.flow import Flow, start
 from pydantic import AliasChoices, BaseModel, ConfigDict, Field, ValidationError
 
 from agentic_testing.flow import run_flow_from_maestro_payload
+from agentic_testing.runtime_logging import get_runtime_logger, log_event
 from agentic_testing.schemas.maestro_input import MaestroInput
 
 
@@ -33,6 +34,7 @@ _ENVELOPE_KEYS = (
     "policy",
     "requested_outputs",
 )
+LOGGER = get_runtime_logger("main")
 
 
 def _guess_run_id(value: Any) -> str:
@@ -61,6 +63,18 @@ def _top_level_keys(value: Any) -> list[str]:
 
 
 def _build_error_packet(raw_input: Any, exc: Exception, stage: str) -> dict:
+    log_event(
+        LOGGER,
+        event="input_error",
+        level="ERROR",
+        run_id=_guess_run_id(raw_input),
+        stage=stage,
+        context={
+            "detected_top_level_keys": _top_level_keys(raw_input),
+            "accepted_shapes_count": 5,
+        },
+        exc=exc,
+    )
     return {
         "run_id": _guess_run_id(raw_input),
         "status": "failed",
@@ -274,8 +288,24 @@ class AgenticTestingDeploymentFlow(Flow[MaestroSinglePayloadState]):
     @start()
     def run_from_maestro_contract(self) -> dict:
         raw = _extract_raw_input_from_state(self.state)
+        log_event(
+            LOGGER,
+            event="deploy_start_received",
+            level="INFO",
+            run_id=_guess_run_id(raw),
+            stage="run_from_maestro_contract",
+            context={"detected_top_level_keys": _top_level_keys(raw)},
+        )
         try:
             validated_payload = _normalize_maestro_payload(raw)
+            log_event(
+                LOGGER,
+                event="payload_normalized",
+                level="INFO",
+                run_id=validated_payload.get("run_request", {}).get("run_id"),
+                stage="run_from_maestro_contract",
+                context={"sections": sorted(validated_payload.keys())},
+            )
             return run_flow_from_maestro_payload(validated_payload)
         except Exception as exc:
             return _build_error_packet(raw, exc, stage="run_from_maestro_contract")
@@ -297,6 +327,13 @@ def kickoff(inputs=None):
         env_input = os.getenv("CREWAI_INPUT") or os.getenv("MAESTRO_PAYLOAD")
         if env_input:
             inputs = env_input
+            log_event(
+                LOGGER,
+                event="kickoff_input_from_env",
+                level="INFO",
+                stage="kickoff",
+                context={"env_source": "CREWAI_INPUT/MAESTRO_PAYLOAD"},
+            )
         else:
             raise ValueError(
                 "No input provided. Pass a MaestroInput dict/JSON via `inputs` arg, "
@@ -309,6 +346,14 @@ def kickoff(inputs=None):
         # - JSON string payload
         # - {"maestro_payload": <payload>}
         inputs = _normalize_maestro_payload(inputs)
+        log_event(
+            LOGGER,
+            event="kickoff_payload_normalized",
+            level="INFO",
+            run_id=inputs.get("run_request", {}).get("run_id"),
+            stage="kickoff.normalize",
+            context={"sections": sorted(inputs.keys())},
+        )
     except Exception as exc:
         return _build_error_packet(inputs, exc, stage="kickoff.normalize")
 
@@ -326,7 +371,16 @@ def kickoff(inputs=None):
         )
 
     try:
-        return run_flow_from_maestro_payload(inputs)
+        result = run_flow_from_maestro_payload(inputs)
+        log_event(
+            LOGGER,
+            event="kickoff_completed",
+            level="INFO",
+            run_id=result.get("run_id") if isinstance(result, dict) else inputs.get("run_request", {}).get("run_id"),
+            stage="kickoff.run_flow",
+            context={"result_keys": sorted(result.keys()) if isinstance(result, dict) else []},
+        )
+        return result
     except Exception as exc:
         return _build_error_packet(inputs, exc, stage="kickoff.run_flow")
 

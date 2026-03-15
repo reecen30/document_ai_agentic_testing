@@ -9,6 +9,9 @@ import os
 
 from crewai import LLM
 
+from .runtime_logging import get_runtime_logger, log_event
+
+LOGGER = get_runtime_logger("llm_factory")
 
 def _env_float(name: str, default: float) -> float:
     try:
@@ -78,4 +81,35 @@ def get_agent_llm(role: str) -> LLM:
     elif provider == "ollama":
         kwargs["base_url"] = os.getenv("OLLAMA_BASE_URL", "http://localhost:11434")
 
-    return LLM(**kwargs)
+    try:
+        llm = LLM(**kwargs)
+        log_event(
+            LOGGER,
+            event="llm_initialized",
+            level="INFO",
+            stage="get_agent_llm",
+            context={
+                "role": role,
+                "provider": provider,
+                "model": model,
+                "has_base_url": "base_url" in kwargs,
+                "temperature": temperature,
+            },
+        )
+        return llm
+    except Exception as exc:
+        log_event(
+            LOGGER,
+            event="llm_initialization_failed",
+            level="ERROR",
+            stage="get_agent_llm",
+            context={
+                "role": role,
+                "provider": provider,
+                "model": model,
+                "has_base_url": "base_url" in kwargs,
+                "temperature": temperature,
+            },
+            exc=exc,
+        )
+        raise

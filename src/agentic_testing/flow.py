@@ -30,6 +30,7 @@ from typing import Any, Dict
 from crewai.flow.flow import Flow, listen, router, start
 from pydantic import ValidationError
 
+from .runtime_logging import get_runtime_logger, log_event
 from .schemas.crew_output import FlowState
 from .schemas.maestro_input import MaestroInput
 
@@ -44,6 +45,8 @@ from .agents.trend_drift import run_trend_drift
 from .agents.root_cause import run_root_cause
 from .agents.patch_proposal import run_patch_proposal
 from .agents.report_routing import run_report_routing
+
+LOGGER = get_runtime_logger("flow")
 
 
 def _resolve_workspace_path(state: FlowState) -> str:
@@ -161,6 +164,16 @@ class AgenticTestingFlow(Flow[FlowState]):
         msg = f"{agent_name} failed: {exc.__class__.__name__}: {exc}"
         self.state.error_log.append(msg)
         self.state.add_audit_event(agent_name, "ERROR", msg, status="ERROR")
+        log_event(
+            LOGGER,
+            event="flow_step_error",
+            level="ERROR",
+            run_id=self.state.run_id,
+            stage=agent_name,
+            workspace_path=self.state.workspace_path,
+            context={"error_count": len(self.state.error_log)},
+            exc=exc,
+        )
         print(f"[Flow][ERROR] {msg}")
 
     def _safe_fallback_packet(self, extra_error: str = "") -> Dict[str, Any]:
@@ -219,6 +232,19 @@ class AgenticTestingFlow(Flow[FlowState]):
             agent_name="Flow",
             event_type="FLOW_START",
             summary=f"Run {self.state.run_id} started. Workspace: {self.state.workspace_path}",
+        )
+        log_event(
+            LOGGER,
+            event="flow_started",
+            level="INFO",
+            run_id=self.state.run_id,
+            stage="receive_maestro_payload",
+            workspace_path=self.state.workspace_path,
+            context={
+                "workspace_path": self.state.workspace_path,
+                "requested_outputs_keys": sorted((self.state.requested_outputs or {}).keys()),
+                "scope_keys": sorted((self.state.scope or {}).keys()),
+            },
         )
         print(f"[Flow] Run {self.state.run_id} started -> {self.state.workspace_path}")
 
@@ -563,6 +589,19 @@ class AgenticTestingFlow(Flow[FlowState]):
 
         self.state.final_run_packet = result
         self.state.add_audit_event("ReportRoutingAgent", "COMPLETE", f"Verdict: {result.get('verdict')}")
+        log_event(
+            LOGGER,
+            event="flow_completed",
+            level="INFO",
+            run_id=self.state.run_id,
+            stage="run_report_routing_step",
+            workspace_path=self.state.workspace_path,
+            context={
+                "verdict": result.get("verdict"),
+                "status": result.get("status"),
+                "error_count": len(self.state.error_log),
+            },
+        )
         print(f"[Flow] ReportRouting done. Verdict: {result.get('verdict')}")
 
 
@@ -575,10 +614,27 @@ def run_flow_from_maestro_payload(payload) -> Dict[str, Any]:
         payload = json.loads(payload)
 
     run_id = payload.get("run_request", {}).get("run_id", "unknown_run") if isinstance(payload, dict) else "unknown_run"
+    log_event(
+        LOGGER,
+        event="run_flow_entry",
+        level="INFO",
+        run_id=run_id,
+        stage="run_flow_from_maestro_payload",
+        context={"payload_type": type(payload).__name__, "top_level_keys": sorted(payload.keys()) if isinstance(payload, dict) else []},
+    )
 
     try:
         maestro_input = MaestroInput(**payload)
     except ValidationError as exc:
+        log_event(
+            LOGGER,
+            event="run_flow_validation_failed",
+            level="ERROR",
+            run_id=run_id,
+            stage="run_flow_from_maestro_payload",
+            context={"error_count": len(exc.errors())},
+            exc=exc,
+        )
         return {
             "error": "validation_error",
             "detail": exc.errors(),
@@ -593,15 +649,38 @@ def run_flow_from_maestro_payload(payload) -> Dict[str, Any]:
     try:
         flow = AgenticTestingFlow()
         flow.kickoff(inputs=state_dict)
-        return flow.state.final_run_packet or {
+        result = flow.state.final_run_packet or {
             "error": "Flow completed but final_run_packet is None",
             "run_id": run_id,
             "verdict": "ERROR",
             "block_release": True,
             "request_human_review": True,
         }
+        log_event(
+            LOGGER,
+            event="run_flow_exit",
+            level="INFO",
+            run_id=run_id,
+            stage="run_flow_from_maestro_payload",
+            context={
+                "result_verdict": result.get("verdict"),
+                "result_status": result.get("status"),
+                "has_artifacts": isinstance(result.get("artifacts"), dict),
+            },
+            workspace_path=flow.state.workspace_path,
+        )
+        return result
     except Exception as exc:
         error_message = f"{exc.__class__.__name__}: {exc}"
+        log_event(
+            LOGGER,
+            event="run_flow_crashed",
+            level="ERROR",
+            run_id=run_id,
+            stage="run_flow_from_maestro_payload",
+            context={},
+            exc=exc,
+        )
         return {
             "error": error_message,
             "run_id": run_id,
