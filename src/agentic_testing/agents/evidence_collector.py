@@ -13,6 +13,7 @@ from typing import Any, Dict
 from crewai import Agent, Crew, LLM, Task
 from pydantic import BaseModel, Field
 
+from agentic_testing.agent_mode import use_deterministic_mode
 from agentic_testing.llm_factory import get_agent_llm
 
 
@@ -62,6 +63,83 @@ class EvidenceCollectorOutput(BaseModel):
     )
 
 
+def _deterministic_evidence_collector(
+    evidence_store_path: str,
+    selected_transaction_ids: list,
+    sheet_names: Dict[str, str],
+) -> Dict[str, Any]:
+    from agentic_testing.tools.excel_reader import read_document_data, read_exception_logs, read_api_data
+    from agentic_testing.tools.evidence_tools import build_case_bundle, summarize_evidence
+
+    raw_doc = read_document_data._run(
+        workbook_path=evidence_store_path,
+        sheet_name=str(sheet_names.get("document_data", "DocumentData")),
+        transaction_ids=selected_transaction_ids or None,
+        process_stage_ids=[1, 2, 3, 4],
+        max_rows=50000,
+    )
+    document_rows = json.loads(raw_doc)
+    if isinstance(document_rows, dict):
+        document_rows = []
+
+    if not selected_transaction_ids:
+        selected_transaction_ids = sorted(
+            {
+                int(r.get("TransactionID"))
+                for r in document_rows
+                if str(r.get("TransactionID", "")).isdigit()
+            }
+        )
+
+    raw_exc = read_exception_logs._run(
+        workbook_path=evidence_store_path,
+        sheet_name=str(sheet_names.get("exception_logs", "ExceptionLogs")),
+        transaction_ids=selected_transaction_ids or None,
+        max_rows=10000,
+    )
+    exception_rows = json.loads(raw_exc)
+    if isinstance(exception_rows, dict):
+        exception_rows = []
+
+    raw_api = read_api_data._run(
+        workbook_path=evidence_store_path,
+        sheet_name=str(sheet_names.get("api_data", "api.APIData")),
+        transaction_ids=selected_transaction_ids or None,
+        max_rows=10000,
+    )
+    api_rows = json.loads(raw_api)
+    if isinstance(api_rows, dict):
+        api_rows = []
+
+    case_bundles: list[Dict[str, Any]] = []
+    for tid in selected_transaction_ids:
+        raw_bundle = build_case_bundle._run(
+            transaction_id=int(tid),
+            document_data_rows=document_rows,
+            exception_rows=exception_rows,
+            api_rows=api_rows,
+            candidate_rows=[],
+        )
+        bundle = json.loads(raw_bundle)
+        if isinstance(bundle, dict) and "error" not in bundle:
+            case_bundles.append(bundle)
+
+    raw_summary = summarize_evidence._run(case_bundles=case_bundles)
+    summary = json.loads(raw_summary)
+    if not isinstance(summary, dict):
+        summary = {}
+
+    return {
+        "case_bundles": case_bundles,
+        "total_transactions": int(summary.get("total_transactions", len(case_bundles))),
+        "doc_type_distribution": summary.get("doc_type_distribution", {}),
+        "evidence_quality_note": summary.get("evidence_quality_note", ""),
+        "missing_truth_count": int(summary.get("missing_truth_count", 0)),
+        "missing_candidate_count": int(summary.get("missing_candidate_count", 0)),
+        "evidence_summary": summary,
+    }
+
+
 # ---------------------------------------------------------------------------
 # Agent entry point
 # ---------------------------------------------------------------------------
@@ -103,6 +181,13 @@ def run_evidence_collector(state_dict: Dict[str, Any]) -> Dict[str, Any]:
             "api_data": "api.APIData",
         },
     )
+
+    if use_deterministic_mode():
+        return _deterministic_evidence_collector(
+            evidence_store_path=evidence_store_path,
+            selected_transaction_ids=selected_transaction_ids,
+            sheet_names=sheet_names,
+        )
 
     llm = get_structured_llm()
 
@@ -183,20 +268,28 @@ Return ONLY valid JSON. Do not include markdown fences, explanations, or comment
             "evidence_quality_note (str), missing_truth_count (int), missing_candidate_count (int)."
         ),
         agent=agent,
-        output_pydantic=EvidenceCollectorOutput,
+        # Keep provider-compatible response mode (no forced json_schema).
     )
 
-    crew = Crew(agents=[agent], tasks=[task], verbose=True)
-    result = crew.kickoff()
+    try:
+        crew = Crew(agents=[agent], tasks=[task], verbose=True)
+        result = crew.kickoff()
+    except Exception:
+        return _deterministic_evidence_collector(
+            evidence_store_path=evidence_store_path,
+            selected_transaction_ids=selected_transaction_ids,
+            sheet_names=sheet_names,
+        )
 
     try:
-        if hasattr(result, "pydantic") and result.pydantic is not None:
-            return result.pydantic.model_dump()
         raw = result.raw if hasattr(result, "raw") else str(result)
-        return json.loads(raw) if isinstance(raw, str) else raw
-    except (json.JSONDecodeError, AttributeError) as exc:
-        return {
-            "error": "Failed to parse agent output",
-            "detail": str(exc),
-            "raw": str(result),
-        }
+        parsed = json.loads(raw) if isinstance(raw, str) else raw
+        if not isinstance(parsed, dict):
+            raise ValueError("Evidence collector returned non-dict payload")
+        return parsed
+    except Exception:
+        return _deterministic_evidence_collector(
+            evidence_store_path=evidence_store_path,
+            selected_transaction_ids=selected_transaction_ids,
+            sheet_names=sheet_names,
+        )

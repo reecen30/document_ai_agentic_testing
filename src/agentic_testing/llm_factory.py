@@ -127,34 +127,45 @@ def get_agent_llm(role: str) -> LLM:
     if provider == "groq":
         # Force native OpenAI provider path in CrewAI (no LiteLLM required).
         kwargs["provider"] = "openai"
-        groq_key = _first_env("GROQ_API_KEY", "AGENTIC_LLM_API_KEY", "OPENAI_API_KEY")
+        groq_key = _first_env(
+            "GROQ_API_KEY",
+            "GROQ_API_TOKEN",
+            "AGENTIC_LLM_API_KEY",
+            "AGENTIC_API_TOKEN",
+            "OPENAI_API_KEY",
+        )
         if not groq_key:
             raise ValueError(
                 "Missing API key for Groq provider. Set one of: GROQ_API_KEY, "
-                "AGENTIC_LLM_API_KEY, or OPENAI_API_KEY."
+                "GROQ_API_TOKEN, AGENTIC_LLM_API_KEY, AGENTIC_API_TOKEN, or OPENAI_API_KEY."
             )
         kwargs["api_key"] = groq_key
     elif provider == "deepseek":
         kwargs["provider"] = "openai"
-        deepseek_key = _first_env("DEEPSEEK_API_KEY", "AGENTIC_LLM_API_KEY", "OPENAI_API_KEY")
+        deepseek_key = _first_env(
+            "DEEPSEEK_API_KEY",
+            "AGENTIC_LLM_API_KEY",
+            "AGENTIC_API_TOKEN",
+            "OPENAI_API_KEY",
+        )
         if not deepseek_key:
             raise ValueError(
                 "Missing API key for DeepSeek provider. Set one of: DEEPSEEK_API_KEY, "
-                "AGENTIC_LLM_API_KEY, or OPENAI_API_KEY."
+                "AGENTIC_LLM_API_KEY, AGENTIC_API_TOKEN, or OPENAI_API_KEY."
             )
         kwargs["api_key"] = deepseek_key
     elif provider == "openai":
-        openai_key = _first_env("OPENAI_API_KEY", "AGENTIC_LLM_API_KEY")
+        openai_key = _first_env("OPENAI_API_KEY", "AGENTIC_LLM_API_KEY", "AGENTIC_API_TOKEN")
         if not openai_key:
             raise ValueError(
-                "Missing API key for OpenAI provider. Set one of: OPENAI_API_KEY or AGENTIC_LLM_API_KEY."
+                "Missing API key for OpenAI provider. Set one of: OPENAI_API_KEY, AGENTIC_LLM_API_KEY, or AGENTIC_API_TOKEN."
             )
         kwargs["api_key"] = openai_key
     elif provider in {"anthropic", "claude"}:
-        anthropic_key = _first_env("ANTHROPIC_API_KEY", "AGENTIC_LLM_API_KEY")
+        anthropic_key = _first_env("ANTHROPIC_API_KEY", "AGENTIC_LLM_API_KEY", "AGENTIC_API_TOKEN")
         if not anthropic_key:
             raise ValueError(
-                "Missing API key for Anthropic provider. Set one of: ANTHROPIC_API_KEY or AGENTIC_LLM_API_KEY."
+                "Missing API key for Anthropic provider. Set one of: ANTHROPIC_API_KEY, AGENTIC_LLM_API_KEY, or AGENTIC_API_TOKEN."
             )
         kwargs["api_key"] = anthropic_key
     elif provider == "ollama":
@@ -218,9 +229,18 @@ def get_agent_llm(role: str) -> LLM:
                 retry_kwargs["base_url"] = os.getenv("OLLAMA_BASE_URL", "http://localhost:11434/v1")
 
             if detected_prefix == "groq":
-                retry_key = os.getenv("GROQ_API_KEY") or os.getenv("AGENTIC_LLM_API_KEY")
+                retry_key = (
+                    os.getenv("GROQ_API_KEY")
+                    or os.getenv("GROQ_API_TOKEN")
+                    or os.getenv("AGENTIC_LLM_API_KEY")
+                    or os.getenv("AGENTIC_API_TOKEN")
+                )
             elif detected_prefix == "deepseek":
-                retry_key = os.getenv("DEEPSEEK_API_KEY") or os.getenv("AGENTIC_LLM_API_KEY")
+                retry_key = (
+                    os.getenv("DEEPSEEK_API_KEY")
+                    or os.getenv("AGENTIC_LLM_API_KEY")
+                    or os.getenv("AGENTIC_API_TOKEN")
+                )
             else:
                 retry_key = os.getenv("OLLAMA_API_KEY", "ollama")
             if retry_key:

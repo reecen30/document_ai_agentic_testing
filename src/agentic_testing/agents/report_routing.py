@@ -12,6 +12,7 @@ from typing import Any, Dict, List, Optional
 from crewai import Agent, Crew, LLM, Task
 from pydantic import BaseModel, Field, ValidationError
 
+from agentic_testing.agent_mode import use_deterministic_mode
 from agentic_testing.llm_factory import get_agent_llm
 from agentic_testing.runtime_logging import get_runtime_logger, log_event
 from agentic_testing.tools.excel_writer import write_sheet
@@ -506,67 +507,74 @@ def run_report_routing(state_dict: Dict[str, Any]) -> Dict[str, Any]:
     llm_output: Dict[str, Any] = {}
     llm_error: Optional[str] = None
 
-    try:
-        llm = get_structured_llm()
-        prompt_file = os.path.join(os.path.dirname(__file__), "..", "prompts", "report_routing.txt")
-        backstory_extra = ""
-        if os.path.exists(prompt_file):
-            with open(prompt_file, "r", encoding="utf-8") as fh:
-                backstory_extra = fh.read()
+    if not use_deterministic_mode():
+        try:
+            llm = get_structured_llm()
+            prompt_file = os.path.join(os.path.dirname(__file__), "..", "prompts", "report_routing.txt")
+            backstory_extra = ""
+            if os.path.exists(prompt_file):
+                with open(prompt_file, "r", encoding="utf-8") as fh:
+                    backstory_extra = fh.read()
 
-        agent = Agent(
-            role="Report and Routing Orchestrator",
-            goal=(
-                "Synthesize findings into a final routing decision and produce a valid packet."
-            ),
-            backstory=(
-                "You are the final quality gate. Use evidence only and keep decisions policy-aligned.\n\n"
-                + backstory_extra
-            ),
-            tools=[
-                write_html_report,
-                write_execution_visual,
-                write_trace_pack,
-                write_final_packet,
-                write_audit_log_event,
-                write_sheet,
-            ],
-            llm=llm,
-            verbose=True,
-            max_iter=2,
-        )
+            agent = Agent(
+                role="Report and Routing Orchestrator",
+                goal=(
+                    "Synthesize findings into a final routing decision and produce a valid packet."
+                ),
+                backstory=(
+                    "You are the final quality gate. Use evidence only and keep decisions policy-aligned.\n\n"
+                    + backstory_extra
+                ),
+                tools=[
+                    write_html_report,
+                    write_execution_visual,
+                    write_trace_pack,
+                    write_final_packet,
+                    write_audit_log_event,
+                    write_sheet,
+                ],
+                llm=llm,
+                verbose=True,
+                max_iter=2,
+            )
 
-        task = Task(
-            description=(
-                f"Run ID: {run_id}. "
-                f"Policy thresholds block={block_threshold}, warn={warn_threshold}. "
-                f"weighted_f1_delta={weighted_f1_delta}. "
-                f"critical_regression={critical_regression}. "
-                "Return valid JSON for FinalRoutingOutput only."
-            ),
-            expected_output="A valid FinalRoutingOutput JSON object.",
-            agent=agent,
-            output_pydantic=FinalRoutingOutput,
-        )
+            task = Task(
+                description=(
+                    f"Run ID: {run_id}. "
+                    f"Policy thresholds block={block_threshold}, warn={warn_threshold}. "
+                    f"weighted_f1_delta={weighted_f1_delta}. "
+                    f"critical_regression={critical_regression}. "
+                    "Return valid JSON for FinalRoutingOutput only."
+                ),
+                expected_output="A valid FinalRoutingOutput JSON object.",
+                agent=agent,
+            )
 
-        result = Crew(agents=[agent], tasks=[task], verbose=True).kickoff()
-        if hasattr(result, "pydantic") and result.pydantic is not None:
-            llm_output = result.pydantic.model_dump()
-        else:
+            result = Crew(agents=[agent], tasks=[task], verbose=True).kickoff()
             raw = result.raw if hasattr(result, "raw") else str(result)
             llm_output = _parse_json_or_empty(raw)
-    except Exception as exc:
-        llm_error = str(exc)
-        llm_output = {}
+        except Exception as exc:
+            llm_error = str(exc)
+            llm_output = {}
+            log_event(
+                LOGGER,
+                event="report_routing_llm_synthesis_failed",
+                level="ERROR",
+                run_id=run_id,
+                stage="run_report_routing",
+                workspace_path=workspace_path or None,
+                context={"pre_verdict": pre_verdict},
+                exc=exc,
+            )
+    else:
         log_event(
             LOGGER,
-            event="report_routing_llm_synthesis_failed",
-            level="ERROR",
+            event="report_routing_llm_synthesis_skipped",
+            level="INFO",
             run_id=run_id,
             stage="run_report_routing",
             workspace_path=workspace_path or None,
-            context={"pre_verdict": pre_verdict},
-            exc=exc,
+            context={"reason": "deterministic_mode_enabled"},
         )
 
     llm_verdict = str(llm_output.get("verdict", pre_verdict)).upper()

@@ -454,7 +454,11 @@ class AgenticTestingFlow(Flow[FlowState]):
     def run_regression_refresh_step(self) -> None:
         """Step 10 - Re-run regression hunter on expanded evidence."""
         self._run_regression_hunter_internal()
-        self.run_trend_drift_step()
+
+    @router(run_regression_refresh_step)
+    def route_after_regression_refresh(self) -> str:
+        """After rerun refresh, continue through the standard trend branch."""
+        return "trend_drift_branch"
 
     @listen("trend_drift_branch")
     def run_trend_drift_step(self) -> None:

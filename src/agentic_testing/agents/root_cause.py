@@ -13,6 +13,7 @@ from typing import Any, Dict, List, Optional
 from crewai import Agent, Crew, LLM, Task
 from pydantic import BaseModel, Field
 
+from agentic_testing.agent_mode import use_deterministic_mode
 from agentic_testing.llm_factory import get_agent_llm
 
 
@@ -66,6 +67,59 @@ class RootCauseOutput(BaseModel):
     )
 
 
+def _deterministic_root_cause(
+    change_summary: Dict[str, Any],
+    regression_findings: list,
+    trend_summary: Dict[str, Any],
+) -> Dict[str, Any]:
+    root_causes: list[Dict[str, Any]] = []
+    prompt_changed = bool(change_summary.get("prompt_changed"))
+    model_changed = bool(change_summary.get("model_changed"))
+    trend = str(trend_summary.get("overall_direction") or trend_summary.get("trend_direction") or "")
+
+    if regression_findings and prompt_changed:
+        root_causes.append(
+            {
+                "cause": "Prompt changes correlate with observed regressions.",
+                "cause_type": "prompt",
+                "confidence": 0.72,
+                "supporting_evidence": ["prompt_changed=true", f"regression_count={len(regression_findings)}"],
+            }
+        )
+    if regression_findings and model_changed:
+        root_causes.append(
+            {
+                "cause": "Model change may have shifted prediction behavior.",
+                "cause_type": "model",
+                "confidence": 0.66,
+                "supporting_evidence": ["model_changed=true", f"trend={trend or 'unknown'}"],
+            }
+        )
+    if not root_causes and regression_findings:
+        root_causes.append(
+            {
+                "cause": "Evidence suggests regression, but direct artifact linkage is weak.",
+                "cause_type": "evidence",
+                "confidence": 0.5,
+                "supporting_evidence": [f"regression_count={len(regression_findings)}"],
+            }
+        )
+    if not regression_findings:
+        root_causes.append(
+            {
+                "cause": "No significant regression findings to attribute.",
+                "cause_type": "evidence",
+                "confidence": 0.8,
+                "supporting_evidence": ["regression_count=0"],
+            }
+        )
+
+    root_causes.sort(key=lambda x: float(x.get("confidence", 0.0)), reverse=True)
+    primary = root_causes[0]["cause"] if root_causes and float(root_causes[0].get("confidence", 0.0)) > 0.4 else None
+    overall_conf = max(float(root_causes[0].get("confidence", 0.0)), 0.0) if root_causes else 0.0
+    return {"root_causes": root_causes, "primary_cause": primary, "confidence": min(1.0, overall_conf)}
+
+
 # ---------------------------------------------------------------------------
 # Agent entry point
 # ---------------------------------------------------------------------------
@@ -90,6 +144,13 @@ def run_root_cause(state_dict: Dict[str, Any]) -> Dict[str, Any]:
     targeted_rerun_summary: Optional[Dict[str, Any]] = state_dict.get("targeted_rerun_summary", None)
     trend_summary: Dict[str, Any] = state_dict.get("trend_summary", {})
     run_id: str = state_dict.get("run_id", "unknown_run")
+
+    if use_deterministic_mode():
+        return _deterministic_root_cause(
+            change_summary=change_summary,
+            regression_findings=regression_findings,
+            trend_summary=trend_summary,
+        )
 
     llm = get_reasoning_llm()
 
@@ -166,20 +227,28 @@ Return ONLY valid JSON. Do not include markdown fences, explanations, or comment
             "confidence (float)."
         ),
         agent=agent,
-        output_pydantic=RootCauseOutput,
+        # Keep provider-compatible response mode (no forced json_schema).
     )
 
-    crew = Crew(agents=[agent], tasks=[task], verbose=True)
-    result = crew.kickoff()
+    try:
+        crew = Crew(agents=[agent], tasks=[task], verbose=True)
+        result = crew.kickoff()
+    except Exception:
+        return _deterministic_root_cause(
+            change_summary=change_summary,
+            regression_findings=regression_findings,
+            trend_summary=trend_summary,
+        )
 
     try:
-        if hasattr(result, "pydantic") and result.pydantic is not None:
-            return result.pydantic.model_dump()
         raw = result.raw if hasattr(result, "raw") else str(result)
-        return json.loads(raw) if isinstance(raw, str) else raw
-    except (json.JSONDecodeError, AttributeError) as exc:
-        return {
-            "error": "Failed to parse agent output",
-            "detail": str(exc),
-            "raw": str(result),
-        }
+        parsed = json.loads(raw) if isinstance(raw, str) else raw
+        if not isinstance(parsed, dict):
+            raise ValueError("RootCause returned non-dict payload")
+        return parsed
+    except Exception:
+        return _deterministic_root_cause(
+            change_summary=change_summary,
+            regression_findings=regression_findings,
+            trend_summary=trend_summary,
+        )

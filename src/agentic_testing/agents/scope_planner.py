@@ -12,6 +12,7 @@ from typing import Any, Dict
 from crewai import Agent, Crew, LLM, Task
 from pydantic import BaseModel, Field
 
+from agentic_testing.agent_mode import use_deterministic_mode
 from agentic_testing.llm_factory import get_agent_llm
 
 
@@ -60,6 +61,91 @@ class ScopePlannerOutput(BaseModel):
     )
 
 
+def _dedupe_keep_order(values: list) -> list:
+    seen = set()
+    result = []
+    for value in values:
+        if value in seen:
+            continue
+        seen.add(value)
+        result.append(value)
+    return result
+
+
+def _deterministic_scope_planner(
+    scope: Dict[str, Any],
+    change_summary: Dict[str, Any],
+    max_initial_transactions: int,
+    evidence_store_path: str,
+    evidence_store_config: Dict[str, Any],
+) -> Dict[str, Any]:
+    from agentic_testing.tools.excel_reader import read_document_data
+
+    user_transaction_ids = scope.get("transaction_ids") or []
+    document_type_names = scope.get("document_type_names") or []
+    allow_expand = bool(scope.get("allow_agent_to_expand_scope", False))
+    process_stage_ids = scope.get("process_stage_ids") or [1, 2, 3, 4]
+    date_from = scope.get("date_from")
+    date_to = scope.get("date_to")
+
+    selected_ids: list[int] = []
+    selected_doc_types: list[str] = []
+
+    if user_transaction_ids:
+        selected_ids = [int(x) for x in user_transaction_ids if str(x).strip().isdigit()][:max_initial_transactions]
+        selected_doc_types = [str(x) for x in document_type_names]
+        rationale = "Used explicit transaction_ids provided in scope."
+    else:
+        sheet_names = evidence_store_config.get("sheet_names", {}) if isinstance(evidence_store_config, dict) else {}
+        document_sheet = str(sheet_names.get("document_data", "DocumentData"))
+        raw = read_document_data._run(
+            workbook_path=evidence_store_path,
+            sheet_name=document_sheet,
+            transaction_ids=None,
+            process_stage_ids=process_stage_ids,
+            document_type_names=document_type_names or None,
+            date_from=date_from,
+            date_to=date_to,
+            max_rows=20000,
+        )
+        rows = json.loads(raw)
+        if isinstance(rows, dict):
+            rows = []
+
+        critical = {"IdentityDocument", "Passport", "ApplicationForm"}
+        if not document_type_names:
+            rows.sort(key=lambda r: (0 if str(r.get("DocumentTypeName")) in critical else 1, str(r.get("CreatedDateTime", ""))), reverse=False)
+
+        tx_ids = [int(r.get("TransactionID")) for r in rows if str(r.get("TransactionID", "")).isdigit()]
+        selected_ids = _dedupe_keep_order(tx_ids)[:max_initial_transactions]
+
+        dt_map = {}
+        for r in rows:
+            tid = r.get("TransactionID")
+            if not str(tid).isdigit():
+                continue
+            if int(tid) not in set(selected_ids):
+                continue
+            dt = str(r.get("DocumentTypeName", "")).strip()
+            if dt:
+                dt_map[dt] = dt_map.get(dt, 0) + 1
+        selected_doc_types = list(dt_map.keys())
+        rationale = "Risk-based deterministic selection from evidence store."
+
+    return {
+        "selected_transaction_ids": selected_ids,
+        "selected_doc_types": selected_doc_types,
+        "analysis_plan": {
+            "rationale": rationale,
+            "approach": "Select high-signal transactions first, then expand only if evidence remains weak.",
+            "risk_areas": [str(x) for x in (change_summary.get("artifact_diff_summary") or [])][:6],
+        },
+        "scope_rationale": rationale,
+        "initial_transaction_count": len(selected_ids),
+        "expansion_allowed": allow_expand,
+    }
+
+
 # ---------------------------------------------------------------------------
 # Agent entry point
 # ---------------------------------------------------------------------------
@@ -98,6 +184,15 @@ def run_scope_planner(state_dict: Dict[str, Any]) -> Dict[str, Any]:
     user_transaction_ids: list = scope.get("transaction_ids", [])
     document_type_names: list = scope.get("document_type_names", [])
     allow_expand: bool = scope.get("allow_agent_to_expand_scope", False)
+
+    if use_deterministic_mode():
+        return _deterministic_scope_planner(
+            scope=scope,
+            change_summary=change_summary,
+            max_initial_transactions=max_initial_transactions,
+            evidence_store_path=evidence_store_path,
+            evidence_store_config=state_dict.get("evidence_store_config", {}),
+        )
 
     llm = get_reasoning_llm()
 
@@ -170,20 +265,32 @@ Return ONLY valid JSON. Do not include markdown fences, explanations, or comment
             "expansion_allowed (bool)."
         ),
         agent=agent,
-        output_pydantic=ScopePlannerOutput,
+        # Keep provider-compatible response mode (no forced json_schema).
     )
 
-    crew = Crew(agents=[agent], tasks=[task], verbose=True)
-    result = crew.kickoff()
+    try:
+        crew = Crew(agents=[agent], tasks=[task], verbose=True)
+        result = crew.kickoff()
+    except Exception:
+        return _deterministic_scope_planner(
+            scope=scope,
+            change_summary=change_summary,
+            max_initial_transactions=max_initial_transactions,
+            evidence_store_path=evidence_store_path,
+            evidence_store_config=state_dict.get("evidence_store_config", {}),
+        )
 
     try:
-        if hasattr(result, "pydantic") and result.pydantic is not None:
-            return result.pydantic.model_dump()
         raw = result.raw if hasattr(result, "raw") else str(result)
-        return json.loads(raw) if isinstance(raw, str) else raw
-    except (json.JSONDecodeError, AttributeError) as exc:
-        return {
-            "error": "Failed to parse agent output",
-            "detail": str(exc),
-            "raw": str(result),
-        }
+        parsed = json.loads(raw) if isinstance(raw, str) else raw
+        if not isinstance(parsed, dict):
+            raise ValueError("Scope planner returned non-dict payload")
+        return parsed
+    except Exception:
+        return _deterministic_scope_planner(
+            scope=scope,
+            change_summary=change_summary,
+            max_initial_transactions=max_initial_transactions,
+            evidence_store_path=evidence_store_path,
+            evidence_store_config=state_dict.get("evidence_store_config", {}),
+        )

@@ -12,6 +12,7 @@ from typing import Any, Dict, Optional
 from crewai import Agent, Crew, LLM, Task
 from pydantic import BaseModel, Field
 
+from agentic_testing.agent_mode import use_deterministic_mode
 from agentic_testing.llm_factory import get_agent_llm
 
 
@@ -90,6 +91,73 @@ class ChallengerOutput(BaseModel):
     )
 
 
+def _deterministic_challenger(
+    total_transactions: int,
+    doc_type_distribution: Dict[str, int],
+    improvement_findings: list,
+    regression_findings: list,
+    hidden_risk_findings: list,
+    evidence_summary: Dict[str, Any],
+) -> Dict[str, Any]:
+    counts = [int(v) for v in doc_type_distribution.values()] if isinstance(doc_type_distribution, dict) else []
+    min_count = min(counts) if counts else 0
+    if counts and min_count >= 10:
+        sample_size_verdict = "adequate"
+    elif counts and min_count >= 5:
+        sample_size_verdict = "marginal"
+    else:
+        sample_size_verdict = "insufficient"
+
+    finding_count = len(improvement_findings) + len(regression_findings) + len(hidden_risk_findings)
+    pattern_stability_verdict = "stable" if finding_count >= 3 else "isolated" if finding_count > 0 else "inconclusive"
+
+    missing_truth = int((evidence_summary or {}).get("missing_truth_count", 0) or 0)
+    label_ratio = (missing_truth / total_transactions) if total_transactions else 0.0
+    if label_ratio > 0.4:
+        label_quality_concern = "severe"
+    elif label_ratio > 0.2:
+        label_quality_concern = "moderate"
+    elif label_ratio > 0.0:
+        label_quality_concern = "minor"
+    else:
+        label_quality_concern = "none"
+
+    needs_more_evidence = sample_size_verdict == "insufficient" or pattern_stability_verdict == "isolated"
+    challenge_notes = []
+    if sample_size_verdict != "adequate":
+        challenge_notes.append(f"Sample size is {sample_size_verdict}; add more transactions per represented doc type.")
+    if pattern_stability_verdict in {"isolated", "inconclusive"}:
+        challenge_notes.append("Observed patterns are not yet stable across enough transactions.")
+    if label_quality_concern in {"moderate", "severe"}:
+        challenge_notes.append("Ground-truth label quality may be affecting confidence in conclusions.")
+
+    recommended_expansion = None
+    if needs_more_evidence:
+        recommended_expansion = "Expand targeted scope by 10-20 transactions in affected document types."
+
+    overall_confidence = 0.8
+    if sample_size_verdict == "marginal":
+        overall_confidence = 0.6
+    if sample_size_verdict == "insufficient":
+        overall_confidence = 0.4
+    if label_quality_concern in {"moderate", "severe"}:
+        overall_confidence = min(overall_confidence, 0.5)
+
+    return {
+        "confidence_assessment": {
+            "overall_confidence": overall_confidence,
+            "sample_size_verdict": sample_size_verdict,
+            "pattern_stability_verdict": pattern_stability_verdict,
+            "label_quality_concern": label_quality_concern,
+        },
+        "needs_more_evidence": needs_more_evidence,
+        "challenge_notes": challenge_notes,
+        "sample_size_adequate": sample_size_verdict == "adequate",
+        "label_noise_concern": label_quality_concern in {"moderate", "severe"},
+        "recommended_expansion": recommended_expansion,
+    }
+
+
 # ---------------------------------------------------------------------------
 # Agent entry point
 # ---------------------------------------------------------------------------
@@ -118,6 +186,16 @@ def run_challenger(state_dict: Dict[str, Any]) -> Dict[str, Any]:
     total_transactions: int = state_dict.get("total_transactions", 0)
     doc_type_distribution: Dict[str, int] = state_dict.get("doc_type_distribution", {})
     run_id: str = state_dict.get("run_id", "unknown_run")
+
+    if use_deterministic_mode():
+        return _deterministic_challenger(
+            total_transactions=total_transactions,
+            doc_type_distribution=doc_type_distribution,
+            improvement_findings=improvement_findings,
+            regression_findings=regression_findings,
+            hidden_risk_findings=hidden_risk_findings,
+            evidence_summary=evidence_summary,
+        )
 
     llm = get_reasoning_llm()
 
@@ -198,20 +276,34 @@ Return ONLY valid JSON. Do not include markdown fences, explanations, or comment
             "recommended_expansion (str or null)."
         ),
         agent=agent,
-        output_pydantic=ChallengerOutput,
+        # Keep provider-compatible response mode (no forced json_schema).
     )
 
-    crew = Crew(agents=[agent], tasks=[task], verbose=True)
-    result = crew.kickoff()
+    try:
+        crew = Crew(agents=[agent], tasks=[task], verbose=True)
+        result = crew.kickoff()
+    except Exception:
+        return _deterministic_challenger(
+            total_transactions=total_transactions,
+            doc_type_distribution=doc_type_distribution,
+            improvement_findings=improvement_findings,
+            regression_findings=regression_findings,
+            hidden_risk_findings=hidden_risk_findings,
+            evidence_summary=evidence_summary,
+        )
 
     try:
-        if hasattr(result, "pydantic") and result.pydantic is not None:
-            return result.pydantic.model_dump()
         raw = result.raw if hasattr(result, "raw") else str(result)
-        return json.loads(raw) if isinstance(raw, str) else raw
-    except (json.JSONDecodeError, AttributeError) as exc:
-        return {
-            "error": "Failed to parse agent output",
-            "detail": str(exc),
-            "raw": str(result),
-        }
+        parsed = json.loads(raw) if isinstance(raw, str) else raw
+        if not isinstance(parsed, dict):
+            raise ValueError("Challenger returned non-dict payload")
+        return parsed
+    except Exception:
+        return _deterministic_challenger(
+            total_transactions=total_transactions,
+            doc_type_distribution=doc_type_distribution,
+            improvement_findings=improvement_findings,
+            regression_findings=regression_findings,
+            hidden_risk_findings=hidden_risk_findings,
+            evidence_summary=evidence_summary,
+        )

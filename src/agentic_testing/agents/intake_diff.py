@@ -13,6 +13,7 @@ from typing import Any, Dict
 from crewai import Agent, Crew, LLM, Task
 from pydantic import BaseModel, Field
 
+from agentic_testing.agent_mode import use_deterministic_mode
 from agentic_testing.llm_factory import get_agent_llm
 
 
@@ -64,6 +65,106 @@ class IntakeDiffOutput(BaseModel):
     confidence: float = Field(..., ge=0.0, le=1.0, description="Overall analyst confidence in the diff analysis")
 
 
+def _deterministic_intake_diff(
+    current_prompt_text: str,
+    previous_prompt_text: str,
+    current_model: str,
+    previous_model: str,
+    run_id: str,
+    workspace_path: str,
+) -> Dict[str, Any]:
+    from agentic_testing.tools.diff_tools import diff_prompt_artifacts, compare_model_change
+    from agentic_testing.tools.logging_tools import write_model_data_trace
+
+    diff_data = json.loads(
+        diff_prompt_artifacts._run(
+            current_prompt_text=current_prompt_text,
+            previous_prompt_text=previous_prompt_text,
+            context_lines=3,
+        )
+    )
+    model_data = json.loads(
+        compare_model_change._run(
+            current_model=current_model,
+            previous_model=previous_model,
+        )
+    )
+
+    prompt_changed = not bool(diff_data.get("prompts_identical", True))
+    model_changed = bool(model_data.get("model_changed", False))
+    summary = []
+    if prompt_changed:
+        summary.append(str(diff_data.get("summary", "Prompt text changed")))
+    if model_changed:
+        summary.append(str(model_data.get("description", "Model changed")))
+    if not summary:
+        summary.append("No material artifact changes detected.")
+
+    risk_hypotheses = []
+    if prompt_changed:
+        risk_hypotheses.append(
+            {
+                "hypothesis": "Prompt wording changes may alter classification or extraction behavior.",
+                "risk_area": "classification",
+                "risk_level": "medium",
+                "confidence": 0.65,
+            }
+        )
+    if model_changed:
+        risk_hypotheses.append(
+            {
+                "hypothesis": "Model change may shift confidence calibration and error profile.",
+                "risk_area": "model_bias",
+                "risk_level": "high",
+                "confidence": 0.72,
+            }
+        )
+
+    details = []
+    for section in diff_data.get("changed_sections", [])[:8]:
+        details.append(
+            {
+                "section": str(section),
+                "change_type": "modified",
+                "description": "Prompt section changed in unified diff.",
+                "risk_level": "medium",
+            }
+        )
+
+    # Best-effort trace write (never fail deterministic output for trace issues)
+    try:
+        write_model_data_trace._run(
+            workspace_path=workspace_path,
+            run_id=run_id,
+            in_argument_field="change_summary_json",
+            in_argument_value=json.dumps(
+                {
+                    "prompt_changed": prompt_changed,
+                    "model_changed": model_changed,
+                    "artifact_diff_summary": summary,
+                },
+                default=str,
+            ),
+        )
+    except Exception:
+        pass
+
+    result = {
+        "prompt_changed": prompt_changed,
+        "model_changed": model_changed,
+        "artifact_diff_summary": summary,
+        "artifact_diff_details": details,
+        "initial_risk_hypotheses": risk_hypotheses,
+        "confidence": 0.75 if (prompt_changed or model_changed) else 0.9,
+    }
+    result["change_summary"] = {
+        "prompt_changed": prompt_changed,
+        "model_changed": model_changed,
+        "artifact_diff_summary": summary,
+    }
+    return result
+
+
 # ---------------------------------------------------------------------------
 # Agent entry point
 # ---------------------------------------------------------------------------
@@ -84,9 +185,6 @@ def run_intake_diff(state_dict: Dict[str, Any]) -> Dict[str, Any]:
     Returns:
         dict conforming to IntakeDiffOutput schema, or error dict on failure.
     """
-    from agentic_testing.tools.diff_tools import diff_prompt_artifacts, compare_model_change
-    from agentic_testing.tools.logging_tools import write_model_data_trace
-
     current_artifact: Dict[str, Any] = state_dict.get("current_artifact", {}) or {}
     previous_artifact: Dict[str, Any] = state_dict.get("previous_artifact", {}) or {}
 
@@ -96,6 +194,19 @@ def run_intake_diff(state_dict: Dict[str, Any]) -> Dict[str, Any]:
     previous_model: str = state_dict.get("previous_model") or previous_artifact.get("model_name", "unknown")
     run_id: str = state_dict.get("run_id", "unknown_run")
     workspace_path: str = state_dict.get("workspace_path", "")
+
+    if use_deterministic_mode():
+        return _deterministic_intake_diff(
+            current_prompt_text=current_prompt_text,
+            previous_prompt_text=previous_prompt_text,
+            current_model=current_model,
+            previous_model=previous_model,
+            run_id=run_id,
+            workspace_path=workspace_path,
+        )
+
+    from agentic_testing.tools.diff_tools import diff_prompt_artifacts, compare_model_change
+    from agentic_testing.tools.logging_tools import write_model_data_trace
 
     llm = get_reasoning_llm()
 
@@ -169,20 +280,49 @@ Return ONLY valid JSON. Do not include markdown fences, explanations, or comment
             "objects with hypothesis, risk_area, risk_level, confidence), confidence (float)."
         ),
         agent=agent,
-        output_pydantic=IntakeDiffOutput,
+        # Keep provider-compatible response mode (no forced json_schema).
     )
 
-    crew = Crew(agents=[agent], tasks=[task], verbose=True)
-    result = crew.kickoff()
+    try:
+        crew = Crew(agents=[agent], tasks=[task], verbose=True)
+        result = crew.kickoff()
+    except Exception:
+        return _deterministic_intake_diff(
+            current_prompt_text=current_prompt_text,
+            previous_prompt_text=previous_prompt_text,
+            current_model=current_model,
+            previous_model=previous_model,
+            run_id=run_id,
+            workspace_path=workspace_path,
+        )
 
     try:
-        if hasattr(result, "pydantic") and result.pydantic is not None:
-            return result.pydantic.model_dump()
         raw = result.raw if hasattr(result, "raw") else str(result)
-        return json.loads(raw) if isinstance(raw, str) else raw
-    except (json.JSONDecodeError, AttributeError) as exc:
-        return {
-            "error": "Failed to parse agent output",
-            "detail": str(exc),
-            "raw": str(result),
-        }
+        parsed = json.loads(raw) if isinstance(raw, str) else raw
+        if not isinstance(parsed, dict):
+            return _deterministic_intake_diff(
+                current_prompt_text=current_prompt_text,
+                previous_prompt_text=previous_prompt_text,
+                current_model=current_model,
+                previous_model=previous_model,
+                run_id=run_id,
+                workspace_path=workspace_path,
+            )
+        parsed.setdefault(
+            "change_summary",
+            {
+                "prompt_changed": parsed.get("prompt_changed"),
+                "model_changed": parsed.get("model_changed"),
+                "artifact_diff_summary": parsed.get("artifact_diff_summary", []),
+            },
+        )
+        return parsed
+    except (json.JSONDecodeError, AttributeError, TypeError):
+        return _deterministic_intake_diff(
+            current_prompt_text=current_prompt_text,
+            previous_prompt_text=previous_prompt_text,
+            current_model=current_model,
+            previous_model=previous_model,
+            run_id=run_id,
+            workspace_path=workspace_path,
+        )
