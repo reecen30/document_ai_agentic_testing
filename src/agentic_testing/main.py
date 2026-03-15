@@ -17,7 +17,7 @@ from collections.abc import Mapping
 from typing import Any
 
 from crewai.flow.flow import Flow, start
-from pydantic import AliasChoices, BaseModel, Field, ValidationError
+from pydantic import AliasChoices, BaseModel, ConfigDict, Field, ValidationError
 
 from agentic_testing.flow import run_flow_from_maestro_payload
 from agentic_testing.schemas.maestro_input import MaestroInput
@@ -234,11 +234,35 @@ class MaestroSinglePayloadState(BaseModel):
     Deployment state with ONE input field so AMP UI shows a single payload box.
     """
 
+    model_config = ConfigDict(extra="allow")
+
     maestro_payload: Any = Field(
         default=None,
         description="Full Maestro envelope JSON as object or JSON string.",
         validation_alias=AliasChoices("maestro_payload", "inputs", "payload"),
     )
+
+
+def _extract_raw_input_from_state(state: "MaestroSinglePayloadState") -> Any:
+    """
+    CrewAI may pass payloads in different shapes depending on UI/API/runtime wrappers.
+    Prefer the explicit single field, but gracefully fall back to any extra keys
+    captured by pydantic when available.
+    """
+    raw = _to_plain_obj(getattr(state, "maestro_payload", None))
+    if not _is_effectively_empty(raw):
+        return raw
+
+    extra = getattr(state, "__pydantic_extra__", None)
+    if isinstance(extra, dict) and extra:
+        return _to_plain_obj(extra)
+
+    dumped = state.model_dump(by_alias=True, exclude_none=True)
+    if isinstance(dumped, dict) and dumped:
+        if not (len(dumped) == 1 and _is_effectively_empty(dumped.get("maestro_payload"))):
+            return _to_plain_obj(dumped)
+
+    return raw
 
 
 class AgenticTestingDeploymentFlow(Flow[MaestroSinglePayloadState]):
@@ -249,7 +273,7 @@ class AgenticTestingDeploymentFlow(Flow[MaestroSinglePayloadState]):
 
     @start()
     def run_from_maestro_contract(self) -> dict:
-        raw = self.state.maestro_payload
+        raw = _extract_raw_input_from_state(self.state)
         try:
             validated_payload = _normalize_maestro_payload(raw)
             return run_flow_from_maestro_payload(validated_payload)
