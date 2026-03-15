@@ -1,85 +1,80 @@
 {
-  "run_request": {
-    "run_id": "RUN-2026-03-15-TEST-001",
-    "process_name": "document_ai_agentic_testing",
-    "run_mode": "manual",
-    "analysis_mode": "agentic_investigation",
-    "time_budget_minutes": 20,
-    "max_initial_transactions": 10,
-    "max_total_transactions": 30,
-    "max_targeted_reruns": 2,
-    "triggered_by": "manual_test"
-  },
-  "scope": {
-    "date_from": "2026-03-01",
-    "date_to": "2026-03-15",
-    "transaction_ids": [
-      1001,
-      1002,
-      1003
-    ],
-    "document_type_names": [],
-    "process_stage_ids": [
-      1,
-      2,
-      3,
-      4
-    ],
-    "allow_agent_to_expand_scope": true
-  },
-  "current_execution_artifact": {
-    "prompt_name": "classification_extraction_bundle",
-    "prompt_version_label": "bundle_v17",
-    "prompt_text": "Classify documents and extract key fields. Prioritize IdentityDocument and Passport precision. Avoid false positives on out-of-scope docs.",
-    "model_name": "llama-3.1-8b-instant",
-    "artifact_hash": "sha256-current-bundle-v17"
-  },
-  "previous_execution_artifact": {
-    "prompt_name": "classification_extraction_bundle",
-    "prompt_version_label": "bundle_v16",
-    "prompt_text": "Classify documents and extract key fields. Handle IdentityDocument extraction and basic application fields.",
-    "model_name": "llama-3.1-8b-instant",
-    "artifact_hash": "sha256-previous-bundle-v16"
-  },
-  "evidence_store": {
-    "store_type": "excel",
-    "store_ref": "DocumentAI_EvidenceStore",
-    "sheet_names": {
-      "document_data": "DocumentData",
-      "model_data": "ai.ModelData",
-      "document_types": "DocumentTypes",
-      "process_stages": "ProcessStages",
-      "model_names": "ai.ModelNames",
-      "model_stages": "ai.ModelStages",
-      "model_types": "ai.ModelTypes",
-      "exception_logs": "ExceptionLogs",
-      "api_data": "api.APIData"
+  "inputs": {
+    "maestro_payload": {
+      "run_request": {
+        "run_id": "RUN-2026-03-15-TEST-001",
+        "process_name": "document_ai_agentic_testing",
+        "run_mode": "manual",
+        "analysis_mode": "agentic_investigation",
+        "time_budget_minutes": 20,
+        "max_initial_transactions": 10,
+        "max_total_transactions": 30,
+        "max_targeted_reruns": 2,
+        "triggered_by": "manual_test"
+      },
+      "scope": {
+        "date_from": "2026-03-01",
+        "date_to": "2026-03-15",
+        "transaction_ids": [1001, 1002, 1003],
+        "document_type_names": [],
+        "process_stage_ids": [1, 2, 3, 4],
+        "allow_agent_to_expand_scope": true
+      },
+      "current_execution_artifact": {
+        "prompt_name": "classification_extraction_bundle",
+        "prompt_version_label": "bundle_v17",
+        "prompt_text": "Classify documents and extract key fields. Prioritize IdentityDocument and Passport precision. Avoid false positives on out-of-scope docs.",
+        "model_name": "llama-3.1-8b-instant",
+        "artifact_hash": "sha256-current-bundle-v17"
+      },
+      "previous_execution_artifact": {
+        "prompt_name": "classification_extraction_bundle",
+        "prompt_version_label": "bundle_v16",
+        "prompt_text": "Classify documents and extract key fields. Handle IdentityDocument extraction and basic application fields.",
+        "model_name": "llama-3.1-8b-instant",
+        "artifact_hash": "sha256-previous-bundle-v16"
+      },
+      "evidence_store": {
+        "store_type": "excel",
+        "store_ref": "DocumentAI_EvidenceStore",
+        "sheet_names": {
+          "document_data": "DocumentData",
+          "model_data": "ai.ModelData",
+          "document_types": "DocumentTypes",
+          "process_stages": "ProcessStages",
+          "model_names": "ai.ModelNames",
+          "model_stages": "ai.ModelStages",
+          "model_types": "ai.ModelTypes",
+          "exception_logs": "ExceptionLogs",
+          "api_data": "api.APIData"
+        }
+      },
+      "storage": {
+        "artifact_namespace": "agentic-testing",
+        "run_workspace_key": "RUN-2026-03-15-TEST-001",
+        "output_mode": "managed_workspace",
+        "workspace_base_path": null
+      },
+      "policy": {
+        "critical_doc_types": [
+          "IdentityDocument",
+          "Passport",
+          "ApplicationForm"
+        ],
+        "warn_weighted_f1_drop": 0.02,
+        "block_weighted_f1_drop": 0.05,
+        "block_empty_rate_increase": 0.03,
+        "block_exception_rate_increase": 0.02
+      },
+      "requested_outputs": {
+        "pdf_report": true,
+        "html_report": true,
+        "excel_log": true,
+        "json_packet": true,
+        "trace_pack": true,
+        "patch_candidates": true,
+        "audit_log_excel": true
+      }
     }
-  },
-  "storage": {
-    "artifact_namespace": "agentic-testing",
-    "run_workspace_key": "RUN-2026-03-15-TEST-001",
-    "output_mode": "managed_workspace",
-    "workspace_base_path": null
-  },
-  "policy": {
-    "critical_doc_types": [
-      "IdentityDocument",
-      "Passport",
-      "ApplicationForm"
-    ],
-    "warn_weighted_f1_drop": 0.02,
-    "block_weighted_f1_drop": 0.05,
-    "block_empty_rate_increase": 0.03,
-    "block_exception_rate_increase": 0.02
-  },
-  "requested_outputs": {
-    "pdf_report": true,
-    "html_report": true,
-    "excel_log": true,
-    "json_packet": true,
-    "trace_pack": true,
-    "patch_candidates": true,
-    "audit_log_excel": true
   }
 }
