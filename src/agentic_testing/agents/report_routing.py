@@ -110,7 +110,7 @@ def _requested_output(requested_outputs: Any, key: str, default: bool = True) ->
 
 
 def _severity(verdict: str) -> int:
-    ranking = {"PASS": 0, "WARN": 1, "BLOCK": 2}
+    ranking = {"PASS": 0, "WARN": 1, "BLOCK": 2, "ERROR": 3}
     return ranking.get(str(verdict).upper(), 0)
 
 
@@ -140,6 +140,15 @@ def _compute_pre_verdict(
 
 def _default_routing(verdict: str, rationale: str) -> Dict[str, Any]:
     v = str(verdict).upper()
+    if v == "ERROR":
+        return {
+            "block_release": True,
+            "request_human_review": True,
+            "open_defect": True,
+            "notify_roles": ["AI_LEAD", "DELIVERY_OWNER"],
+            "verdict": v,
+            "verdict_rationale": rationale,
+        }
     if v == "BLOCK":
         return {
             "block_release": True,
@@ -405,6 +414,7 @@ def run_report_routing(state_dict: Dict[str, Any]) -> Dict[str, Any]:
     recommended_experiments: List[str] = [str(x) for x in _as_list(state_dict.get("recommended_experiments"))]
     rerun_count: int = int(state_dict.get("rerun_count", 0) or 0)
     audit_events: List[Dict[str, Any]] = [x for x in _as_list(state_dict.get("audit_events")) if isinstance(x, dict)]
+    flow_errors: List[str] = [str(x) for x in _as_list(state_dict.get("error_log")) if str(x).strip()]
 
     total_transactions = int(
         _as_dict(state_dict.get("evidence_summary")).get("total_transactions", len(_as_list(state_dict.get("case_bundles"))))
@@ -418,6 +428,8 @@ def run_report_routing(state_dict: Dict[str, Any]) -> Dict[str, Any]:
         regression_findings=regression_findings,
         critical_doc_types=critical_doc_types,
     )
+    if flow_errors:
+        pre_verdict = "ERROR"
 
     llm_output: Dict[str, Any] = {}
     llm_error: Optional[str] = None
@@ -476,7 +488,7 @@ def run_report_routing(state_dict: Dict[str, Any]) -> Dict[str, Any]:
         llm_output = {}
 
     llm_verdict = str(llm_output.get("verdict", pre_verdict)).upper()
-    if llm_verdict not in {"PASS", "WARN", "BLOCK"}:
+    if llm_verdict not in {"PASS", "WARN", "BLOCK", "ERROR"}:
         llm_verdict = pre_verdict
 
     final_verdict = pre_verdict if _severity(pre_verdict) >= _severity(llm_verdict) else llm_verdict
@@ -486,6 +498,8 @@ def run_report_routing(state_dict: Dict[str, Any]) -> Dict[str, Any]:
         _to_float(confidence_assessment.get("overall_confidence", 0.0), 0.0),
     )
     confidence = max(0.0, min(1.0, confidence))
+    if final_verdict == "ERROR":
+        confidence = min(confidence, 0.2)
 
     rationale = (
         _as_dict(llm_output.get("routing")).get("verdict_rationale")
@@ -510,10 +524,12 @@ def run_report_routing(state_dict: Dict[str, Any]) -> Dict[str, Any]:
             recommended_experiments=recommended_experiments,
             verdict=final_verdict,
         )
+    if flow_errors:
+        recommended_actions.insert(0, "Fix runtime/agent execution errors before trusting analysis metrics.")
 
     packet: Dict[str, Any] = {
         "run_id": run_id,
-        "status": "completed",
+        "status": "failed" if final_verdict == "ERROR" else "completed",
         "verdict": final_verdict,
         "confidence": confidence,
         "analysis_scope": {
@@ -535,6 +551,8 @@ def run_report_routing(state_dict: Dict[str, Any]) -> Dict[str, Any]:
         "routing": routing,
         "artifacts": _build_artifact_uris(state_dict=state_dict, run_id=run_id),
     }
+    if flow_errors:
+        packet["errors"] = flow_errors[:50]
 
     if llm_error:
         packet.setdefault("routing", {})
@@ -542,6 +560,8 @@ def run_report_routing(state_dict: Dict[str, Any]) -> Dict[str, Any]:
             str(packet["routing"].get("verdict_rationale", ""))
             + f" (LLM synthesis warning: {llm_error})"
         )
+        packet.setdefault("errors", [])
+        packet["errors"].append(f"LLM synthesis warning: {llm_error}")
 
     packet = _write_artifacts(packet=packet, state_dict=state_dict)
 

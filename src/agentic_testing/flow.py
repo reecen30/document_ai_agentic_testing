@@ -157,6 +157,35 @@ class AgenticTestingFlow(Flow[FlowState]):
     Accepts a MaestroInput payload and returns a final routing packet.
     """
 
+    def _record_step_error(self, agent_name: str, exc: Exception) -> None:
+        msg = f"{agent_name} failed: {exc.__class__.__name__}: {exc}"
+        self.state.error_log.append(msg)
+        self.state.add_audit_event(agent_name, "ERROR", msg, status="ERROR")
+        print(f"[Flow][ERROR] {msg}")
+
+    def _safe_fallback_packet(self, extra_error: str = "") -> Dict[str, Any]:
+        all_errors = list(self.state.error_log or [])
+        if extra_error:
+            all_errors.append(extra_error)
+        return {
+            "run_id": self.state.run_id or "unknown_run",
+            "status": "failed",
+            "verdict": "ERROR",
+            "block_release": True,
+            "request_human_review": True,
+            "open_defect": True,
+            "errors": all_errors,
+            "routing": {
+                "block_release": True,
+                "request_human_review": True,
+                "open_defect": True,
+                "notify_roles": ["AI_LEAD", "DELIVERY_OWNER"],
+                "verdict": "ERROR",
+                "verdict_rationale": "Flow failed due to runtime errors. See errors list.",
+            },
+            "artifacts": {},
+        }
+
     @start()
     def receive_maestro_payload(self) -> None:
         """Step 1 - Validate and unpack Maestro input, create runtime workspace."""
@@ -197,20 +226,24 @@ class AgenticTestingFlow(Flow[FlowState]):
     def run_intake_diff_step(self) -> None:
         """Step 2 - Diff the execution artifacts."""
         self.state.add_audit_event("IntakeDiffAgent", "START", "Diffing execution artifacts")
-        result = run_intake_diff(
-            {
-                "run_id": self.state.run_id,
-                "current_prompt_text": self.state.current_artifact.get("prompt_text", ""),
-                "previous_prompt_text": self.state.previous_artifact.get("prompt_text", ""),
-                "current_model": self.state.current_artifact.get("model_name", "unknown"),
-                "previous_model": self.state.previous_artifact.get("model_name", "unknown"),
-                "current_version": self.state.current_artifact.get("prompt_version_label", ""),
-                "previous_version": self.state.previous_artifact.get("prompt_version_label", ""),
-                "evidence_store_path": _resolve_evidence_store_path(self.state),
-                "workspace_path": self.state.workspace_path,
-                "audit_log_path": _resolve_audit_log_path(self.state.workspace_path),
-            }
-        )
+        try:
+            result = run_intake_diff(
+                {
+                    "run_id": self.state.run_id,
+                    "current_prompt_text": self.state.current_artifact.get("prompt_text", ""),
+                    "previous_prompt_text": self.state.previous_artifact.get("prompt_text", ""),
+                    "current_model": self.state.current_artifact.get("model_name", "unknown"),
+                    "previous_model": self.state.previous_artifact.get("model_name", "unknown"),
+                    "current_version": self.state.current_artifact.get("prompt_version_label", ""),
+                    "previous_version": self.state.previous_artifact.get("prompt_version_label", ""),
+                    "evidence_store_path": _resolve_evidence_store_path(self.state),
+                    "workspace_path": self.state.workspace_path,
+                    "audit_log_path": _resolve_audit_log_path(self.state.workspace_path),
+                }
+            )
+        except Exception as exc:
+            self._record_step_error("IntakeDiffAgent", exc)
+            result = {}
         self.state.change_summary = result.get("change_summary") or result
         self.state.initial_risk_hypotheses = result.get("initial_risk_hypotheses", [])
         self.state.add_audit_event("IntakeDiffAgent", "COMPLETE", f"Prompt changed: {result.get('prompt_changed')}")
@@ -220,18 +253,22 @@ class AgenticTestingFlow(Flow[FlowState]):
     def run_scope_planner_step(self) -> None:
         """Step 3 - Select initial transaction scope."""
         self.state.add_audit_event("ScopePlannerAgent", "START", "Planning analysis scope")
-        result = run_scope_planner(
-            {
-                "run_id": self.state.run_id,
-                "scope": self.state.scope,
-                "change_summary": self.state.change_summary,
-                "initial_risk_hypotheses": self.state.initial_risk_hypotheses,
-                "evidence_store_path": _resolve_evidence_store_path(self.state),
-                "evidence_store_config": self.state.evidence_store_config,
-                "max_initial_transactions": self.state.run_request.get("max_initial_transactions", 20),
-                "workspace_path": self.state.workspace_path,
-            }
-        )
+        try:
+            result = run_scope_planner(
+                {
+                    "run_id": self.state.run_id,
+                    "scope": self.state.scope,
+                    "change_summary": self.state.change_summary,
+                    "initial_risk_hypotheses": self.state.initial_risk_hypotheses,
+                    "evidence_store_path": _resolve_evidence_store_path(self.state),
+                    "evidence_store_config": self.state.evidence_store_config,
+                    "max_initial_transactions": self.state.run_request.get("max_initial_transactions", 20),
+                    "workspace_path": self.state.workspace_path,
+                }
+            )
+        except Exception as exc:
+            self._record_step_error("ScopePlannerAgent", exc)
+            result = {}
         self.state.selected_transaction_ids = result.get("selected_transaction_ids", [])
         self.state.selected_doc_types = result.get("selected_doc_types", [])
         self.state.analysis_plan = result.get("analysis_plan", {})
@@ -246,15 +283,19 @@ class AgenticTestingFlow(Flow[FlowState]):
     def run_evidence_collector_step(self) -> None:
         """Step 4 - Collect and assemble evidence bundles."""
         self.state.add_audit_event("EvidenceCollectorAgent", "START", "Collecting evidence bundles")
-        result = run_evidence_collector(
-            {
-                "run_id": self.state.run_id,
-                "selected_transaction_ids": self.state.selected_transaction_ids,
-                "evidence_store_path": _resolve_evidence_store_path(self.state),
-                "evidence_store_config": self.state.evidence_store_config,
-                "workspace_path": self.state.workspace_path,
-            }
-        )
+        try:
+            result = run_evidence_collector(
+                {
+                    "run_id": self.state.run_id,
+                    "selected_transaction_ids": self.state.selected_transaction_ids,
+                    "evidence_store_path": _resolve_evidence_store_path(self.state),
+                    "evidence_store_config": self.state.evidence_store_config,
+                    "workspace_path": self.state.workspace_path,
+                }
+            )
+        except Exception as exc:
+            self._record_step_error("EvidenceCollectorAgent", exc)
+            result = {}
         self.state.case_bundles = result.get("case_bundles", [])
         self.state.evidence_summary = result.get("evidence_summary") or {
             "total_transactions": len(self.state.case_bundles),
@@ -273,14 +314,18 @@ class AgenticTestingFlow(Flow[FlowState]):
 
     def _run_regression_hunter_internal(self) -> None:
         self.state.add_audit_event("RegressionHunterAgent", "START", "Hunting regressions")
-        result = run_regression_hunter(
-            {
-                "run_id": self.state.run_id,
-                "case_bundles": self.state.case_bundles,
-                "policy": self.state.policy,
-                "workspace_path": self.state.workspace_path,
-            }
-        )
+        try:
+            result = run_regression_hunter(
+                {
+                    "run_id": self.state.run_id,
+                    "case_bundles": self.state.case_bundles,
+                    "policy": self.state.policy,
+                    "workspace_path": self.state.workspace_path,
+                }
+            )
+        except Exception as exc:
+            self._record_step_error("RegressionHunterAgent", exc)
+            result = {}
         self.state.improvement_findings = result.get("improvement_findings", [])
         self.state.regression_findings = result.get("regression_findings", [])
         self.state.hidden_risk_findings = result.get("hidden_risk_findings", [])
@@ -297,20 +342,24 @@ class AgenticTestingFlow(Flow[FlowState]):
     def run_challenger_step(self) -> None:
         """Step 6 - Challenge the evidence quality."""
         self.state.add_audit_event("ChallengerAgent", "START", "Challenging evidence")
-        result = run_challenger(
-            {
-                "run_id": self.state.run_id,
-                "evidence_summary": self.state.evidence_summary,
-                "improvement_findings": self.state.improvement_findings,
-                "regression_findings": self.state.regression_findings,
-                "hidden_risk_findings": self.state.hidden_risk_findings,
-                "total_transactions": (self.state.evidence_summary or {}).get(
-                    "total_transactions",
-                    len(self.state.case_bundles or []),
-                ),
-                "doc_type_distribution": (self.state.evidence_summary or {}).get("doc_type_distribution", {}),
-            }
-        )
+        try:
+            result = run_challenger(
+                {
+                    "run_id": self.state.run_id,
+                    "evidence_summary": self.state.evidence_summary,
+                    "improvement_findings": self.state.improvement_findings,
+                    "regression_findings": self.state.regression_findings,
+                    "hidden_risk_findings": self.state.hidden_risk_findings,
+                    "total_transactions": (self.state.evidence_summary or {}).get(
+                        "total_transactions",
+                        len(self.state.case_bundles or []),
+                    ),
+                    "doc_type_distribution": (self.state.evidence_summary or {}).get("doc_type_distribution", {}),
+                }
+            )
+        except Exception as exc:
+            self._record_step_error("ChallengerAgent", exc)
+            result = {}
         self.state.confidence_assessment = result.get("confidence_assessment", {})
         self.state.needs_more_evidence = bool(result.get("needs_more_evidence", False))
         self.state.challenge_notes = result.get("challenge_notes", [])
@@ -320,6 +369,8 @@ class AgenticTestingFlow(Flow[FlowState]):
     @router(run_challenger_step)
     def route_after_challenger(self) -> str:
         """ROUTER - branch on whether more evidence is needed."""
+        if self.state.error_log:
+            return "trend_drift_branch"
         max_reruns = self.state.run_request.get("max_targeted_reruns", 3)
         if self.state.needs_more_evidence and self.state.rerun_count < max_reruns:
             return "targeted_rerun_branch"
@@ -330,25 +381,29 @@ class AgenticTestingFlow(Flow[FlowState]):
         """Step 8 (optional) - Expand scope and request targeted rerun."""
         self.state.add_audit_event("TargetedRerunAgent", "START", "Running targeted rerun")
         self.state.rerun_count += 1
-        result = run_targeted_rerun(
-            {
-                "run_id": self.state.run_id,
-                "needs_more_evidence": self.state.needs_more_evidence,
-                "challenge_notes": self.state.challenge_notes,
-                "hidden_risk_findings": self.state.hidden_risk_findings,
-                "change_summary": self.state.change_summary,
-                "current_scope": {
-                    "transaction_ids": self.state.selected_transaction_ids,
-                    "selected_transaction_ids": self.state.selected_transaction_ids,
-                    "document_type_names": self.state.selected_doc_types,
-                    "selected_doc_types": self.state.selected_doc_types,
-                    "scope": self.state.scope,
-                },
-                "evidence_store_path": _resolve_evidence_store_path(self.state),
-                "max_total_transactions": self.state.run_request.get("max_total_transactions", 100),
-                "workspace_path": self.state.workspace_path,
-            }
-        )
+        try:
+            result = run_targeted_rerun(
+                {
+                    "run_id": self.state.run_id,
+                    "needs_more_evidence": self.state.needs_more_evidence,
+                    "challenge_notes": self.state.challenge_notes,
+                    "hidden_risk_findings": self.state.hidden_risk_findings,
+                    "change_summary": self.state.change_summary,
+                    "current_scope": {
+                        "transaction_ids": self.state.selected_transaction_ids,
+                        "selected_transaction_ids": self.state.selected_transaction_ids,
+                        "document_type_names": self.state.selected_doc_types,
+                        "selected_doc_types": self.state.selected_doc_types,
+                        "scope": self.state.scope,
+                    },
+                    "evidence_store_path": _resolve_evidence_store_path(self.state),
+                    "max_total_transactions": self.state.run_request.get("max_total_transactions", 100),
+                    "workspace_path": self.state.workspace_path,
+                }
+            )
+        except Exception as exc:
+            self._record_step_error("TargetedRerunAgent", exc)
+            result = {}
         self.state.targeted_rerun_summary = result.get("targeted_rerun_summary", {})
         self.state.scope_expansion_request = result.get("scope_expansion_request", {})
 
@@ -379,19 +434,23 @@ class AgenticTestingFlow(Flow[FlowState]):
     def run_trend_drift_step(self) -> None:
         """Step 11 - Analyze trends and drift."""
         self.state.add_audit_event("TrendDriftAgent", "START", "Analyzing trends")
-        result = run_trend_drift(
-            {
-                "run_id": self.state.run_id,
-                "date_from": self.state.scope.get("date_from", ""),
-                "date_to": self.state.scope.get("date_to", ""),
-                "evidence_store_path": _resolve_evidence_store_path(self.state),
-                "evidence_store_config": self.state.evidence_store_config,
-                "summary_metrics": self.state.summary_metrics or {},
-                "improvement_findings": self.state.improvement_findings,
-                "regression_findings": self.state.regression_findings,
-                "workspace_path": self.state.workspace_path,
-            }
-        )
+        try:
+            result = run_trend_drift(
+                {
+                    "run_id": self.state.run_id,
+                    "date_from": self.state.scope.get("date_from", ""),
+                    "date_to": self.state.scope.get("date_to", ""),
+                    "evidence_store_path": _resolve_evidence_store_path(self.state),
+                    "evidence_store_config": self.state.evidence_store_config,
+                    "summary_metrics": self.state.summary_metrics or {},
+                    "improvement_findings": self.state.improvement_findings,
+                    "regression_findings": self.state.regression_findings,
+                    "workspace_path": self.state.workspace_path,
+                }
+            )
+        except Exception as exc:
+            self._record_step_error("TrendDriftAgent", exc)
+            result = {}
         self.state.trend_summary = result.get("trend_summary", {})
         self.state.drift_alerts = result.get("drift_alerts", [])
         self.state.trend_direction = result.get("trend_direction")
@@ -403,16 +462,20 @@ class AgenticTestingFlow(Flow[FlowState]):
     def run_root_cause_step(self) -> None:
         """Step 12 - Diagnose root causes."""
         self.state.add_audit_event("RootCauseAgent", "START", "Diagnosing root causes")
-        result = run_root_cause(
-            {
-                "run_id": self.state.run_id,
-                "change_summary": self.state.change_summary,
-                "regression_findings": self.state.regression_findings,
-                "targeted_rerun_summary": self.state.targeted_rerun_summary,
-                "trend_summary": self.state.trend_summary,
-                "workspace_path": self.state.workspace_path,
-            }
-        )
+        try:
+            result = run_root_cause(
+                {
+                    "run_id": self.state.run_id,
+                    "change_summary": self.state.change_summary,
+                    "regression_findings": self.state.regression_findings,
+                    "targeted_rerun_summary": self.state.targeted_rerun_summary,
+                    "trend_summary": self.state.trend_summary,
+                    "workspace_path": self.state.workspace_path,
+                }
+            )
+        except Exception as exc:
+            self._record_step_error("RootCauseAgent", exc)
+            result = {}
         self.state.root_causes = result.get("root_causes", [])
         self.state.add_audit_event("RootCauseAgent", "COMPLETE", f"{len(self.state.root_causes)} causes identified")
         print(f"[Flow] RootCause: {len(self.state.root_causes)} causes")
@@ -421,15 +484,19 @@ class AgenticTestingFlow(Flow[FlowState]):
     def run_patch_proposal_step(self) -> None:
         """Step 13 - Propose safe patches."""
         self.state.add_audit_event("PatchProposalAgent", "START", "Proposing patches")
-        result = run_patch_proposal(
-            {
-                "run_id": self.state.run_id,
-                "root_causes": self.state.root_causes,
-                "change_summary": self.state.change_summary,
-                "regression_findings": self.state.regression_findings,
-                "workspace_path": self.state.workspace_path,
-            }
-        )
+        try:
+            result = run_patch_proposal(
+                {
+                    "run_id": self.state.run_id,
+                    "root_causes": self.state.root_causes,
+                    "change_summary": self.state.change_summary,
+                    "regression_findings": self.state.regression_findings,
+                    "workspace_path": self.state.workspace_path,
+                }
+            )
+        except Exception as exc:
+            self._record_step_error("PatchProposalAgent", exc)
+            result = {}
         self.state.patch_candidates = result.get("patch_candidates", [])
         self.state.recommended_experiments = result.get("recommended_experiments", [])
         self.state.patch_rationale = result.get("patch_rationale", "")
@@ -441,53 +508,57 @@ class AgenticTestingFlow(Flow[FlowState]):
         """Step 14 - Write all outputs and produce final packet."""
         self.state.end_datetime = datetime.datetime.utcnow().isoformat()
         self.state.add_audit_event("ReportRoutingAgent", "START", "Writing all outputs")
-
-        result = run_report_routing(
-            {
-                "run_id": self.state.run_id,
-                "workspace_path": self.state.workspace_path,
-                "policy": self.state.policy,
-                "requested_outputs": self.state.requested_outputs,
-                "run_request": self.state.run_request,
-                "scope": self.state.scope,
-                "date_from": self.state.scope.get("date_from", ""),
-                "date_to": self.state.scope.get("date_to", ""),
-                "current_artifact": self.state.current_artifact,
-                "previous_artifact": self.state.previous_artifact,
-                "change_summary": self.state.change_summary,
-                "selected_transaction_ids": self.state.selected_transaction_ids,
-                "selected_doc_types": self.state.selected_doc_types,
-                "case_bundles": self.state.case_bundles,
-                "evidence_summary": self.state.evidence_summary,
-                "total_transactions": (self.state.evidence_summary or {}).get(
-                    "total_transactions",
-                    len(self.state.case_bundles or []),
-                ),
-                "improvement_findings": self.state.improvement_findings,
-                "regression_findings": self.state.regression_findings,
-                "hidden_risk_findings": self.state.hidden_risk_findings,
-                "summary_metrics": self.state.summary_metrics,
-                "doc_type_breakdown": self.state.doc_type_breakdown,
-                "confidence_assessment": self.state.confidence_assessment,
-                "challenge_notes": self.state.challenge_notes,
-                "targeted_rerun_summary": self.state.targeted_rerun_summary,
-                "scope_expansion_request": self.state.scope_expansion_request,
-                "trend_summary": self.state.trend_summary,
-                "trend_direction": self.state.trend_direction,
-                "trend_confidence": self.state.trend_confidence,
-                "drift_alerts": self.state.drift_alerts,
-                "root_causes": self.state.root_causes,
-                "patch_candidates": self.state.patch_candidates,
-                "patch_rationale": self.state.patch_rationale,
-                "recommended_experiments": self.state.recommended_experiments,
-                "rerun_count": self.state.rerun_count,
-                "start_datetime": self.state.start_datetime,
-                "end_datetime": self.state.end_datetime,
-                "audit_events": self.state.audit_events,
-                "storage_config": self.state.storage_config,
-                "evidence_store_config": self.state.evidence_store_config,
-            }
-        )
+        try:
+            result = run_report_routing(
+                {
+                    "run_id": self.state.run_id,
+                    "workspace_path": self.state.workspace_path,
+                    "policy": self.state.policy,
+                    "requested_outputs": self.state.requested_outputs,
+                    "run_request": self.state.run_request,
+                    "scope": self.state.scope,
+                    "date_from": self.state.scope.get("date_from", ""),
+                    "date_to": self.state.scope.get("date_to", ""),
+                    "current_artifact": self.state.current_artifact,
+                    "previous_artifact": self.state.previous_artifact,
+                    "change_summary": self.state.change_summary,
+                    "selected_transaction_ids": self.state.selected_transaction_ids,
+                    "selected_doc_types": self.state.selected_doc_types,
+                    "case_bundles": self.state.case_bundles,
+                    "evidence_summary": self.state.evidence_summary,
+                    "total_transactions": (self.state.evidence_summary or {}).get(
+                        "total_transactions",
+                        len(self.state.case_bundles or []),
+                    ),
+                    "improvement_findings": self.state.improvement_findings,
+                    "regression_findings": self.state.regression_findings,
+                    "hidden_risk_findings": self.state.hidden_risk_findings,
+                    "summary_metrics": self.state.summary_metrics,
+                    "doc_type_breakdown": self.state.doc_type_breakdown,
+                    "confidence_assessment": self.state.confidence_assessment,
+                    "challenge_notes": self.state.challenge_notes,
+                    "targeted_rerun_summary": self.state.targeted_rerun_summary,
+                    "scope_expansion_request": self.state.scope_expansion_request,
+                    "trend_summary": self.state.trend_summary,
+                    "trend_direction": self.state.trend_direction,
+                    "trend_confidence": self.state.trend_confidence,
+                    "drift_alerts": self.state.drift_alerts,
+                    "root_causes": self.state.root_causes,
+                    "patch_candidates": self.state.patch_candidates,
+                    "patch_rationale": self.state.patch_rationale,
+                    "recommended_experiments": self.state.recommended_experiments,
+                    "rerun_count": self.state.rerun_count,
+                    "start_datetime": self.state.start_datetime,
+                    "end_datetime": self.state.end_datetime,
+                    "audit_events": self.state.audit_events,
+                    "storage_config": self.state.storage_config,
+                    "evidence_store_config": self.state.evidence_store_config,
+                    "error_log": self.state.error_log,
+                }
+            )
+        except Exception as exc:
+            self._record_step_error("ReportRoutingAgent", exc)
+            result = self._safe_fallback_packet(str(exc))
         result = _inject_artifact_base64(result, self.state.workspace_path or "")
 
         self.state.final_run_packet = result
@@ -530,8 +601,9 @@ def run_flow_from_maestro_payload(payload) -> Dict[str, Any]:
             "request_human_review": True,
         }
     except Exception as exc:
+        error_message = f"{exc.__class__.__name__}: {exc}"
         return {
-            "error": str(exc),
+            "error": error_message,
             "run_id": run_id,
             "verdict": "ERROR",
             "block_release": True,

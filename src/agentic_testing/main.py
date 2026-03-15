@@ -17,7 +17,7 @@ from collections.abc import Mapping
 from typing import Any
 
 from crewai.flow.flow import Flow, start
-from pydantic import AliasChoices, BaseModel, Field
+from pydantic import AliasChoices, BaseModel, Field, ValidationError
 
 from agentic_testing.flow import run_flow_from_maestro_payload
 from agentic_testing.schemas.maestro_input import MaestroInput
@@ -33,6 +33,54 @@ _ENVELOPE_KEYS = (
     "policy",
     "requested_outputs",
 )
+
+
+def _guess_run_id(value: Any) -> str:
+    obj = _to_plain_obj(value)
+    if isinstance(obj, dict):
+        run_request = obj.get("run_request")
+        if isinstance(run_request, dict):
+            run_id = run_request.get("run_id")
+            if isinstance(run_id, str) and run_id.strip():
+                return run_id.strip()
+
+        for wrapper_key in ("inputs", "input", "payload", "maestro_payload"):
+            if wrapper_key in obj:
+                nested = _guess_run_id(obj.get(wrapper_key))
+                if nested != "unknown_run":
+                    return nested
+
+    return "unknown_run"
+
+
+def _top_level_keys(value: Any) -> list[str]:
+    obj = _to_plain_obj(value)
+    if isinstance(obj, dict):
+        return sorted(str(k) for k in obj.keys())
+    return []
+
+
+def _build_error_packet(raw_input: Any, exc: Exception, stage: str) -> dict:
+    return {
+        "run_id": _guess_run_id(raw_input),
+        "status": "failed",
+        "verdict": "ERROR",
+        "block_release": True,
+        "request_human_review": True,
+        "error": {
+            "type": exc.__class__.__name__,
+            "message": str(exc),
+            "stage": stage,
+            "detected_top_level_keys": _top_level_keys(raw_input),
+            "accepted_input_shapes": [
+                "{run_request, scope, current_execution_artifact, previous_execution_artifact, evidence_store, storage, policy, requested_outputs}",
+                "{\"maestro_payload\": <full envelope object>}",
+                "{\"maestro_payload\": \"<full envelope JSON string>\"}",
+                "{\"inputs\": {\"maestro_payload\": <full envelope object>}}",
+                "{\"inputs\": <full envelope object>}",
+            ],
+        },
+    }
 
 
 def _try_parse_json_string(value: Any) -> Any:
@@ -160,7 +208,25 @@ def _normalize_maestro_payload(raw_payload: Any) -> dict:
             "3) legacy split fields (run_request, scope, ... requested_outputs)."
         )
 
-    return MaestroInput(**candidate).model_dump()
+    missing_sections = [k for k in _ENVELOPE_KEYS if k not in candidate]
+    if missing_sections:
+        raise ValueError(
+            "Parsed payload is missing required top-level sections: "
+            + ", ".join(missing_sections)
+            + "."
+        )
+
+    try:
+        return MaestroInput(**candidate).model_dump()
+    except ValidationError as exc:
+        # Re-raise as ValueError with concise context so downstream gets cleaner diagnostics.
+        details = []
+        for err in exc.errors()[:12]:
+            loc = ".".join(str(x) for x in err.get("loc", []))
+            msg = err.get("msg", "validation error")
+            details.append(f"{loc}: {msg}")
+        details_text = "; ".join(details) if details else str(exc)
+        raise ValueError(f"MaestroInput validation failed: {details_text}") from exc
 
 
 class MaestroSinglePayloadState(BaseModel):
@@ -183,8 +249,12 @@ class AgenticTestingDeploymentFlow(Flow[MaestroSinglePayloadState]):
 
     @start()
     def run_from_maestro_contract(self) -> dict:
-        validated_payload = _normalize_maestro_payload(self.state.maestro_payload)
-        return run_flow_from_maestro_payload(validated_payload)
+        raw = self.state.maestro_payload
+        try:
+            validated_payload = _normalize_maestro_payload(raw)
+            return run_flow_from_maestro_payload(validated_payload)
+        except Exception as exc:
+            return _build_error_packet(raw, exc, stage="run_from_maestro_contract")
 
 
 def kickoff(inputs=None):
@@ -209,11 +279,14 @@ def kickoff(inputs=None):
                 "CREWAI_INPUT env var, or MAESTRO_PAYLOAD env var."
             )
 
-    # Normalize supported input shapes:
-    # - full payload dict
-    # - JSON string payload
-    # - {"maestro_payload": <payload>}
-    inputs = _normalize_maestro_payload(inputs)
+    try:
+        # Normalize supported input shapes:
+        # - full payload dict
+        # - JSON string payload
+        # - {"maestro_payload": <payload>}
+        inputs = _normalize_maestro_payload(inputs)
+    except Exception as exc:
+        return _build_error_packet(inputs, exc, stage="kickoff.normalize")
 
     # Set workspace base path if not already configured
     if not os.getenv("AGENTIC_LLM_PROVIDER"):
@@ -228,7 +301,10 @@ def kickoff(inputs=None):
             os.path.dirname(__file__), "..", "..", "data", "DocumentAI_EvidenceStore.xlsx"
         )
 
-    return run_flow_from_maestro_payload(inputs)
+    try:
+        return run_flow_from_maestro_payload(inputs)
+    except Exception as exc:
+        return _build_error_packet(inputs, exc, stage="kickoff.run_flow")
 
 
 if __name__ == "__main__":
