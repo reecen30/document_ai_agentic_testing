@@ -75,6 +75,15 @@ SAMPLE SIZE GUIDANCE
   - Per-doctype minimum: Aim for at least 5 transactions per represented doc type.
     If fewer than 5 are available for a critical type, note this in scope_rationale.
 
+EXTRACTION COVERAGE REQUIREMENT
+-------------------------------
+In addition to classification risk, ensure the initial scope can test extraction quality:
+  - Include transactions where mandatory fields are often missing or noisy.
+  - Prefer records containing identity-like fields (IdentityNumber, PassportNumber),
+    date fields (ApplicationDate, ResolutionDate), and entity/person names.
+  - If historical evidence suggests missing-field spikes, include those transactions first.
+  - Explicitly mention extraction-focused selection in analysis_plan.risk_areas.
+
 ANALYSIS PLAN CONTENT
 ----------------------
 The analysis_plan object must contain:

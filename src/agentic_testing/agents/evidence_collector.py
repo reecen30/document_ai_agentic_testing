@@ -8,7 +8,7 @@ case bundles. Does NOT judge quality — only organizes evidence.
 
 import json
 import os
-from typing import Any, Dict
+from typing import Any, Dict, List
 
 from crewai import Agent, Crew, LLM, Task
 from pydantic import BaseModel, Field
@@ -71,6 +71,50 @@ def _deterministic_evidence_collector(
     from agentic_testing.tools.excel_reader import read_document_data, read_exception_logs, read_api_data
     from agentic_testing.tools.evidence_tools import build_case_bundle, summarize_evidence
 
+    errors: List[str] = []
+
+    if not evidence_store_path or not os.path.exists(evidence_store_path):
+        error_msg = (
+            "Evidence store workbook not found. "
+            f"Resolved path: '{evidence_store_path}'. "
+            "Set a valid payload store_ref or EVIDENCE_STORE_PATH."
+        )
+        return {
+            "error": error_msg,
+            "errors": [error_msg],
+            "case_bundles": [],
+            "total_transactions": 0,
+            "doc_type_distribution": {},
+            "evidence_quality_note": "MISSING_EVIDENCE_STORE",
+            "missing_truth_count": 0,
+            "missing_candidate_count": 0,
+            "evidence_summary": {
+                "total_transactions": 0,
+                "doc_type_distribution": {},
+                "missing_truth_count": 0,
+                "missing_candidate_count": 0,
+                "evidence_quality_note": "MISSING_EVIDENCE_STORE",
+            },
+            "evidence_store_path": evidence_store_path,
+        }
+
+    def _parse_rows(raw_payload: str, tool_name: str) -> List[Dict[str, Any]]:
+        try:
+            parsed = json.loads(raw_payload)
+        except Exception as exc:
+            errors.append(f"{tool_name}: failed to parse JSON payload ({exc})")
+            return []
+        if isinstance(parsed, dict):
+            if parsed.get("error"):
+                errors.append(f"{tool_name}: {parsed.get('error')}")
+            else:
+                errors.append(f"{tool_name}: unexpected object payload returned")
+            return []
+        if isinstance(parsed, list):
+            return parsed
+        errors.append(f"{tool_name}: unexpected payload type {type(parsed).__name__}")
+        return []
+
     raw_doc = read_document_data._run(
         workbook_path=evidence_store_path,
         sheet_name=str(sheet_names.get("document_data", "DocumentData")),
@@ -78,9 +122,7 @@ def _deterministic_evidence_collector(
         process_stage_ids=[1, 2, 3, 4],
         max_rows=50000,
     )
-    document_rows = json.loads(raw_doc)
-    if isinstance(document_rows, dict):
-        document_rows = []
+    document_rows = _parse_rows(raw_doc, "read_document_data:DocumentData")
 
     if not selected_transaction_ids:
         selected_transaction_ids = sorted(
@@ -97,9 +139,7 @@ def _deterministic_evidence_collector(
         transaction_ids=selected_transaction_ids or None,
         max_rows=10000,
     )
-    exception_rows = json.loads(raw_exc)
-    if isinstance(exception_rows, dict):
-        exception_rows = []
+    exception_rows = _parse_rows(raw_exc, "read_exception_logs")
 
     raw_api = read_api_data._run(
         workbook_path=evidence_store_path,
@@ -107,9 +147,67 @@ def _deterministic_evidence_collector(
         transaction_ids=selected_transaction_ids or None,
         max_rows=10000,
     )
-    api_rows = json.loads(raw_api)
-    if isinstance(api_rows, dict):
-        api_rows = []
+    api_rows = _parse_rows(raw_api, "read_api_data")
+
+    candidate_sheet_name = str(
+        sheet_names.get("candidate_data")
+        or sheet_names.get("candidate_document_data")
+        or "DocumentData_Candidate"
+    )
+    raw_candidate = read_document_data._run(
+        workbook_path=evidence_store_path,
+        sheet_name=candidate_sheet_name,
+        transaction_ids=selected_transaction_ids or None,
+        process_stage_ids=[1, 3],
+        max_rows=50000,
+    )
+    candidate_rows = _parse_rows(raw_candidate, f"read_document_data:{candidate_sheet_name}")
+
+    # Safe fallback: if no candidate sheet/rows are available, mirror baseline rows.
+    if not candidate_rows:
+        candidate_rows = [
+            dict(r)
+            for r in document_rows
+            if int(r.get("ProcessStageID", 0) or 0) in {1, 3}
+        ]
+        errors.append(
+            f"Candidate rows missing from sheet '{candidate_sheet_name}'. "
+            "Falling back to baseline rows."
+        )
+
+    if not document_rows:
+        error_msg = (
+            "No DocumentData rows were loaded for the selected scope. "
+            f"Workbook: '{evidence_store_path}'. "
+            "Check path/sheet names/transaction IDs."
+        )
+        all_errors = [error_msg] + errors
+        return {
+            "error": error_msg,
+            "errors": all_errors,
+            "case_bundles": [],
+            "total_transactions": 0,
+            "doc_type_distribution": {},
+            "evidence_quality_note": "NO_DOCUMENT_ROWS",
+            "missing_truth_count": 0,
+            "missing_candidate_count": 0,
+            "evidence_summary": {
+                "total_transactions": 0,
+                "doc_type_distribution": {},
+                "missing_truth_count": 0,
+                "missing_candidate_count": 0,
+                "evidence_quality_note": "NO_DOCUMENT_ROWS",
+            },
+            "candidate_sheet_name": candidate_sheet_name,
+            "candidate_row_count": len(candidate_rows),
+            "evidence_store_path": evidence_store_path,
+            "read_row_counts": {
+                "document_rows": 0,
+                "candidate_rows": len(candidate_rows),
+                "exception_rows": len(exception_rows),
+                "api_rows": len(api_rows),
+            },
+        }
 
     case_bundles: list[Dict[str, Any]] = []
     for tid in selected_transaction_ids:
@@ -118,7 +216,7 @@ def _deterministic_evidence_collector(
             document_data_rows=document_rows,
             exception_rows=exception_rows,
             api_rows=api_rows,
-            candidate_rows=[],
+            candidate_rows=candidate_rows,
         )
         bundle = json.loads(raw_bundle)
         if isinstance(bundle, dict) and "error" not in bundle:
@@ -129,7 +227,7 @@ def _deterministic_evidence_collector(
     if not isinstance(summary, dict):
         summary = {}
 
-    return {
+    result = {
         "case_bundles": case_bundles,
         "total_transactions": int(summary.get("total_transactions", len(case_bundles))),
         "doc_type_distribution": summary.get("doc_type_distribution", {}),
@@ -137,7 +235,19 @@ def _deterministic_evidence_collector(
         "missing_truth_count": int(summary.get("missing_truth_count", 0)),
         "missing_candidate_count": int(summary.get("missing_candidate_count", 0)),
         "evidence_summary": summary,
+        "candidate_sheet_name": candidate_sheet_name,
+        "candidate_row_count": len(candidate_rows),
+        "evidence_store_path": evidence_store_path,
+        "read_row_counts": {
+            "document_rows": len(document_rows),
+            "candidate_rows": len(candidate_rows),
+            "exception_rows": len(exception_rows),
+            "api_rows": len(api_rows),
+        },
     }
+    if errors:
+        result["warnings"] = errors
+    return result
 
 
 # ---------------------------------------------------------------------------

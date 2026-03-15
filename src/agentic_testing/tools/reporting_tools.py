@@ -52,7 +52,36 @@ def _fmt_percent(value: Any) -> str:
 def _render_bullets(items: List[Any], empty_msg: str) -> str:
     if not items:
         return f"<p class='muted'>{_escape(empty_msg)}</p>"
-    li = "".join(f"<li>{_escape(item)}</li>" for item in items)
+
+    def _format_item(item: Any) -> str:
+        if not isinstance(item, dict):
+            return str(item)
+        if "transaction_id" in item:
+            txn = item.get("transaction_id", "?")
+            doc_type = item.get("doc_type", "UnknownDoc")
+            field = item.get("field", "")
+            severity = str(item.get("severity", "")).upper()
+            desc = item.get("description", "")
+            delta = item.get("metric_delta")
+            delta_text = f" | delta={delta:+.4f}" if isinstance(delta, (int, float)) else ""
+            field_part = f" | {field}" if field else ""
+            sev_part = f" | {severity}" if severity else ""
+            return f"TX {txn} | {doc_type}{field_part}{sev_part} | {desc}{delta_text}"
+        if "cause" in item:
+            conf = item.get("confidence")
+            conf_text = f" (confidence={conf:.2f})" if isinstance(conf, (int, float)) else ""
+            return f"{item.get('cause', 'Unknown cause')}{conf_text}"
+        if "patch_id" in item:
+            return (
+                f"{item.get('patch_id', 'PATCH')} | {item.get('patch_type', '')} | "
+                f"{item.get('target', '')} | {item.get('description', '')}"
+            )
+        try:
+            return json.dumps(item, ensure_ascii=False)
+        except Exception:
+            return str(item)
+
+    li = "".join(f"<li>{_escape(_format_item(item))}</li>" for item in items)
     return f"<ul>{li}</ul>"
 
 

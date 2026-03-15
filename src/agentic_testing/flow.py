@@ -70,8 +70,11 @@ def _resolve_workspace_path(state: FlowState) -> str:
 
 def _resolve_evidence_store_path(state: FlowState) -> str:
     """Resolve the evidence store path."""
-    store_ref = state.evidence_store_config.get("store_ref", "DocumentAI_EvidenceStore")
-    payload_path = f"data/{store_ref}.xlsx"
+    store_ref = str(state.evidence_store_config.get("store_ref", "DocumentAI_EvidenceStore") or "DocumentAI_EvidenceStore")
+    workbook_name = f"{store_ref}.xlsx"
+    payload_path = os.path.join("data", workbook_name)
+    project_data_path = str(Path(__file__).resolve().parents[2] / "data" / workbook_name)
+    automation_data_path = os.path.join("/automation", "data", workbook_name)
 
     # Explicit override wins when provided (for advanced ops scenarios).
     env_override = os.getenv("EVIDENCE_STORE_PATH_OVERRIDE")
@@ -79,11 +82,16 @@ def _resolve_evidence_store_path(state: FlowState) -> str:
         return env_override
 
     # Prefer payload-selected workbook if present.
-    if os.path.exists(payload_path):
-        return payload_path
+    for candidate in (payload_path, project_data_path, automation_data_path):
+        if candidate and os.path.exists(candidate):
+            return candidate
 
-    # Fallback to legacy env var, then payload path.
-    return os.getenv("EVIDENCE_STORE_PATH", payload_path)
+    env_default = os.getenv("EVIDENCE_STORE_PATH")
+    if env_default and os.path.exists(env_default):
+        return env_default
+
+    # Last-resort fallback for diagnostics when no path exists yet.
+    return env_default or payload_path
 
 
 def _resolve_audit_log_path(workspace_path: str) -> str:
@@ -333,12 +341,13 @@ class AgenticTestingFlow(Flow[FlowState]):
     def run_evidence_collector_step(self) -> None:
         """Step 4 - Collect and assemble evidence bundles."""
         self.state.add_audit_event("EvidenceCollectorAgent", "START", "Collecting evidence bundles")
+        evidence_store_path = _resolve_evidence_store_path(self.state)
         try:
             result = run_evidence_collector(
                 {
                     "run_id": self.state.run_id,
                     "selected_transaction_ids": self.state.selected_transaction_ids,
-                    "evidence_store_path": _resolve_evidence_store_path(self.state),
+                    "evidence_store_path": evidence_store_path,
                     "evidence_store_config": self.state.evidence_store_config,
                     "workspace_path": self.state.workspace_path,
                 }
@@ -346,6 +355,14 @@ class AgenticTestingFlow(Flow[FlowState]):
         except Exception as exc:
             self._record_step_error("EvidenceCollectorAgent", exc)
             result = {}
+        if isinstance(result, dict) and (result.get("error") or result.get("errors")):
+            collector_error = result.get("error") or "; ".join([str(x) for x in result.get("errors", [])][:3])
+            self._record_step_error(
+                "EvidenceCollectorAgent",
+                ValueError(
+                    f"{collector_error} (resolved evidence path: {evidence_store_path})"
+                ),
+            )
         self.state.case_bundles = result.get("case_bundles", [])
         self.state.evidence_summary = result.get("evidence_summary") or {
             "total_transactions": len(self.state.case_bundles),

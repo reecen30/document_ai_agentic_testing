@@ -99,6 +99,12 @@ def _deterministic_regression_hunter(case_bundles: list, critical_doc_types: lis
     improvements = []
     regressions = []
     hidden_risks = []
+    critical_set = {str(x).strip() for x in (critical_doc_types or [])}
+
+    classification_improved_count = 0
+    classification_regressed_count = 0
+    extraction_improved_count = 0
+    extraction_regressed_count = 0
 
     for bundle in case_bundles:
         b = json.loads(compare_baseline_to_truth._run(case_bundle=bundle))
@@ -114,29 +120,95 @@ def _deterministic_regression_hunter(case_bundles: list, critical_doc_types: lis
         doc_type = str(bundle.get("doc_type_truth") or bundle.get("doc_type_baseline") or "Unknown")
         b_ok = b.get("classification_correct")
         c_ok = c.get("classification_correct")
+        b_exact = b.get("exact_match_rate")
+        c_exact = c.get("exact_match_rate")
+        b_missing = b.get("missing_field_rate")
+        c_missing = c.get("missing_field_rate")
 
         if b_ok is False and c_ok is True:
+            classification_improved_count += 1
             improvements.append(
                 {
                     "transaction_id": tid,
                     "doc_type": doc_type,
                     "field": "DocumentType",
                     "description": "Candidate classification corrected a baseline mismatch.",
-                    "severity": "high" if doc_type in set(critical_doc_types) else "medium",
+                    "severity": "high" if doc_type in critical_set else "medium",
                     "metric_delta": 1.0,
                     "evidence_reference": "classification_correct baseline->candidate",
                 }
             )
         if b_ok is True and c_ok is False:
+            classification_regressed_count += 1
             regressions.append(
                 {
                     "transaction_id": tid,
                     "doc_type": doc_type,
                     "field": "DocumentType",
                     "description": "Candidate introduced a classification regression.",
-                    "severity": "critical" if doc_type in set(critical_doc_types) else "high",
+                    "severity": "critical" if doc_type in critical_set else "high",
                     "metric_delta": -1.0,
                     "evidence_reference": "classification_correct baseline->candidate",
+                }
+            )
+
+        try:
+            delta_exact = float(c_exact) - float(b_exact)
+        except (TypeError, ValueError):
+            delta_exact = 0.0
+
+        try:
+            delta_missing = float(c_missing) - float(b_missing)
+        except (TypeError, ValueError):
+            delta_missing = 0.0
+
+        if delta_exact >= 0.2 or delta_missing <= -0.15:
+            extraction_improved_count += 1
+            improvements.append(
+                {
+                    "transaction_id": tid,
+                    "doc_type": doc_type,
+                    "field": "Extraction",
+                    "description": (
+                        "Candidate extraction quality improved "
+                        f"(exact_match_delta={delta_exact:+.3f}, missing_delta={delta_missing:+.3f})."
+                    ),
+                    "severity": "medium",
+                    "metric_delta": round(delta_exact, 4),
+                    "evidence_reference": "exact_match_rate / missing_field_rate baseline->candidate",
+                }
+            )
+        if delta_exact <= -0.15 or delta_missing >= 0.15:
+            extraction_regressed_count += 1
+            regressions.append(
+                {
+                    "transaction_id": tid,
+                    "doc_type": doc_type,
+                    "field": "Extraction",
+                    "description": (
+                        "Candidate extraction quality regressed "
+                        f"(exact_match_delta={delta_exact:+.3f}, missing_delta={delta_missing:+.3f})."
+                    ),
+                    "severity": "high" if doc_type in critical_set else "medium",
+                    "metric_delta": round(delta_exact, 4),
+                    "evidence_reference": "exact_match_rate / missing_field_rate baseline->candidate",
+                }
+            )
+
+        if bundle.get("exceptions") and c_ok is False:
+            first_exception = (bundle.get("exceptions") or [{}])[0]
+            hidden_risks.append(
+                {
+                    "transaction_id": tid,
+                    "doc_type": doc_type,
+                    "field": "ExceptionCorrelation",
+                    "description": (
+                        "Candidate regression co-occurred with exception log: "
+                        f"{first_exception.get('ExceptionType', 'UnknownException')}."
+                    ),
+                    "severity": "medium",
+                    "metric_delta": 0.0,
+                    "evidence_reference": "exceptions + classification_correct",
                 }
             )
 
@@ -181,10 +253,22 @@ def _deterministic_regression_hunter(case_bundles: list, critical_doc_types: lis
     doc_metrics_raw = json.loads(calculate_doc_type_metrics._run(case_bundles=case_bundles))
     doc_type_breakdown = {}
     for row in doc_metrics_raw.get("doc_type_metrics", []):
-        doc_type_breakdown[str(row.get("doc_type", "Unknown"))] = {
+        row_doc_type = str(row.get("doc_type", "Unknown"))
+        row_doc_type_norm = row_doc_type.strip().lower()
+        doc_type_breakdown[row_doc_type] = {
+            "transactions_evaluated": row.get("total_transactions", 0),
+            "baseline_accuracy": row.get("baseline_accuracy", 0.0),
+            "candidate_accuracy": row.get("candidate_accuracy", 0.0),
             "weighted_f1_delta": row.get("delta_f1", 0.0),
-            "improvement_count": len([x for x in improvements if str(x.get("doc_type")) == str(row.get("doc_type"))]),
-            "regression_count": len([x for x in regressions if str(x.get("doc_type")) == str(row.get("doc_type"))]),
+            "improvement_count": len(
+                [x for x in improvements if str(x.get("doc_type", "")).strip().lower() == row_doc_type_norm]
+            ),
+            "regression_count": len(
+                [x for x in regressions if str(x.get("doc_type", "")).strip().lower() == row_doc_type_norm]
+            ),
+            "hidden_risk_count": len(
+                [x for x in hidden_risks if str(x.get("doc_type", "")).strip().lower() == row_doc_type_norm]
+            ),
         }
 
     return {
@@ -201,6 +285,12 @@ def _deterministic_regression_hunter(case_bundles: list, critical_doc_types: lis
             "empty_rate_candidate": empty_rate_candidate,
             "classification_accuracy_baseline": classification_accuracy_baseline,
             "classification_accuracy_candidate": classification_accuracy_candidate,
+            "transactions_evaluated": len(case_bundles),
+            "classification_improved_count": classification_improved_count,
+            "classification_regressed_count": classification_regressed_count,
+            "extraction_improved_count": extraction_improved_count,
+            "extraction_regressed_count": extraction_regressed_count,
+            "high_confidence_wrong_count": int(conf_mismatch.get("flagged_count", 0) or 0),
         },
         "doc_type_breakdown": doc_type_breakdown,
     }

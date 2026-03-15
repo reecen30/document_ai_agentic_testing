@@ -53,10 +53,36 @@ Expected:
   - `empty_rate_*`
 - richer timeline and routing narrative in HTML/PDF.
 
-## 3) Notes
+## 3) Client Onboarding Demo (ID/Passport/AppForm/Windeed/Product Forms)
+
+Payload file:
+- `data/test_maestro_payload_client_onboarding_kickoff.json`
+
+PowerShell:
+```powershell
+$AGENT_URL = "https://<your-agent>.crewai.com/kickoff"
+$AGENT_TOKEN = "<your-bearer-token>"
+
+curl -X POST $AGENT_URL `
+  -H "Authorization: Bearer $AGENT_TOKEN" `
+  -H "Content-Type: application/json" `
+  -H "Accept: application/json" `
+  --data-binary "@data/test_maestro_payload_client_onboarding_kickoff.json"
+```
+
+Expected:
+- non-empty `summary_metrics` and non-empty `doc_type_breakdown`
+- both `improvements` and `regressions` populated (for a realistic stakeholder demo)
+- PDF and HTML reports show richer onboarding-specific findings:
+  - Identity/Passport confusion
+  - Windeed routing improvements
+  - Product form extraction completeness patterns
+
+## 4) Notes
 
 - These payloads are already in **single envelope** format:
   - `{"inputs":{"maestro_payload":{...}}}`
 - Evidence store used:
-  - `data/DocumentAI_EvidenceStore_Demo.xlsx`
+  - `data/DocumentAI_EvidenceStore_ClientDemo.xlsx`
+  - (compatibility copy: `data/DocumentAI_EvidenceStore_Demo.xlsx`)
   - Candidate sheet: `DocumentData_Candidate`

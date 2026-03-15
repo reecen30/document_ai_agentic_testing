@@ -106,6 +106,15 @@ Namespaces and their corresponding artifact types:
   managed://traces/<run_id>/trace.zip          → Trace pack (full agent trace bundle)
   managed://audit/<run_id>/audit.jsonl         → Audit log (append-only JSONL events)
 
+PDF OUTPUT EXPECTATION
+----------------------
+When requested_outputs.pdf_report = true, include a PDF artifact URI and ensure the report
+highlights:
+  - verdict and confidence,
+  - key summary metrics and deltas,
+  - top improvements/regressions/hidden risks,
+  - routing rationale and next actions.
+
 RECOMMENDED ACTIONS FORMAT
 ----------------------------
 Provide 3–8 recommended actions, ordered by priority (most urgent first).
@@ -175,6 +184,7 @@ The JSON must conform exactly to the FinalRoutingOutput schema:
     "verdict_rationale": "<specific evidence-grounded rationale>"
   },
   "artifacts": {
+    "report_pdf_uri": "managed://reports/<run_id>/outputs/Run_Report.pdf",
     "report_html_uri": "managed://reports/<run_id>/report.html",
     "run_json_uri": "managed://packets/<run_id>/routing.json",
     "excel_log_uri": "managed://excel/<run_id>/run_log.xlsx",

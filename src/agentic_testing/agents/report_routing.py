@@ -403,23 +403,27 @@ def _write_artifacts(packet: Dict[str, Any], state_dict: Dict[str, Any]) -> Dict
     audit_events = _as_list(state_dict.get("audit_events"))
     policy = _as_dict(state_dict.get("policy"))
     summary_metrics = _as_dict(packet.get("summary_metrics"))
+    doc_type_breakdown = _as_dict(state_dict.get("doc_type_breakdown"))
+    analysis_scope = _as_dict(packet.get("analysis_scope"))
+    scope_doc_types = _as_list(analysis_scope.get("doc_types"))
+    evidence_summary = _as_dict(state_dict.get("evidence_summary"))
 
     html_state = {
         "run_id": run_id,
         "workspace_path": workspace_path,
         "verdict": packet.get("verdict", "UNKNOWN"),
         "confidence": packet.get("confidence", 0.0),
-        "transaction_count": _as_dict(packet.get("analysis_scope")).get("total_transactions", 0),
-        "date_from": _as_dict(packet.get("analysis_scope")).get("date_from", ""),
-        "date_to": _as_dict(packet.get("analysis_scope")).get("date_to", ""),
+        "transaction_count": analysis_scope.get("total_transactions", 0),
+        "date_from": analysis_scope.get("date_from", ""),
+        "date_to": analysis_scope.get("date_to", ""),
         "metrics": _as_dict(packet.get("summary_metrics")),
-        "doc_type_breakdown": _as_dict(state_dict.get("doc_type_breakdown")),
+        "doc_type_breakdown": doc_type_breakdown,
         "improvements": _as_list(packet.get("improvements")),
         "regressions": _as_list(packet.get("regressions")),
         "hidden_risks": _as_list(packet.get("hidden_risks")),
         "root_causes": _as_list(packet.get("root_causes")),
         "patch_candidates": _as_list(packet.get("patch_candidates")),
-        "doc_type_count": len(_as_dict(state_dict.get("doc_type_breakdown"))),
+        "doc_type_count": len(doc_type_breakdown) or len(scope_doc_types) or len(_as_dict(evidence_summary.get("doc_type_distribution"))),
         "rerun_count": int(state_dict.get("rerun_count", 0) or 0),
         "weighted_f1_delta": summary_metrics.get("weighted_f1_delta", "-"),
         "warn_threshold": policy.get("warn_weighted_f1_drop", 0.02),

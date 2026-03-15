@@ -154,4 +154,13 @@ The JSON must conform exactly to the RegressionHunterOutput schema:
       "classification_accuracy_candidate": <float>
     }
   }
+
+DEMO REPORTING EMPHASIS
+-----------------------
+When evidence supports it, produce findings that help demo audiences quickly understand impact:
+  - At least one concise improvement narrative and one concise regression narrative
+    (if both exist in evidence), each linked to transaction IDs.
+  - Clear extraction-oriented notes on exact-match or missing-rate changes.
+  - Include confidence mismatch signals when high-confidence mistakes exist.
+Do not invent findings; if evidence is absent, explicitly return empty lists.
 }

@@ -2,20 +2,20 @@
   "inputs": {
     "maestro_payload": {
       "run_request": {
-        "run_id": "RUN-2026-03-15-PASS-CLEAN-001",
+        "run_id": "RUN-2026-03-15-PASS-DEMO-001",
         "process_name": "document_ai_agentic_testing",
         "run_mode": "manual",
         "analysis_mode": "agentic_investigation",
         "time_budget_minutes": 12,
-        "max_initial_transactions": 9,
-        "max_total_transactions": 9,
+        "max_initial_transactions": 10,
+        "max_total_transactions": 10,
         "max_targeted_reruns": 0,
-        "triggered_by": "manual_pass_clean_demo"
+        "triggered_by": "manual_pass_demo"
       },
       "scope": {
         "date_from": "2026-03-01",
         "date_to": "2026-03-15",
-        "transaction_ids": [1001, 1002, 1003, 1004, 1005, 1006, 1007, 1008, 1010],
+        "transaction_ids": [1001, 1002, 1003, 1004, 1005, 1006, 1007, 1008, 1009, 1010],
         "document_type_names": ["IdentityDocument", "Passport", "ApplicationForm", "Other"],
         "process_stage_ids": [1, 2, 3, 4],
         "allow_agent_to_expand_scope": false
@@ -25,7 +25,7 @@
         "prompt_version_label": "bundle_v17",
         "prompt_text": "Classify documents and extract key fields. Prioritize precision and extraction completeness for critical doc types. Keep out-of-scope handling strict.",
         "model_name": "llama-3.1-8b-instant",
-        "artifact_hash": "sha256-current-bundle-v17-pass-clean"
+        "artifact_hash": "sha256-current-bundle-v17-pass"
       },
       "previous_execution_artifact": {
         "prompt_name": "classification_extraction_bundle",
@@ -52,7 +52,7 @@
       },
       "storage": {
         "artifact_namespace": "agentic-testing",
-        "run_workspace_key": "RUN-2026-03-15-PASS-CLEAN-001",
+        "run_workspace_key": "RUN-2026-03-15-PASS-DEMO-001",
         "output_mode": "managed_workspace",
         "workspace_base_path": null
       },

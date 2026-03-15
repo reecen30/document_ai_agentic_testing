@@ -1,44 +1,79 @@
-﻿{
+{
   "inputs": {
     "maestro_payload": {
       "run_request": {
-        "run_id": "RUN-2026-03-15-DEMO-RELAXED-001",
+        "run_id": "RUN-2026-03-16-RELAXED-PASS-DETAIL-001",
         "process_name": "document_ai_agentic_testing",
         "run_mode": "demo",
         "analysis_mode": "agentic_investigation",
-        "time_budget_minutes": 8,
-        "max_initial_transactions": 5,
-        "max_total_transactions": 10,
+        "time_budget_minutes": 20,
+        "max_initial_transactions": 20,
+        "max_total_transactions": 20,
         "max_targeted_reruns": 1,
-        "triggered_by": "demo_http_test"
+        "triggered_by": "client_demo_relaxed_pass"
       },
       "scope": {
         "date_from": "2026-03-01",
-        "date_to": "2026-03-15",
-        "transaction_ids": [],
-        "document_type_names": [],
-        "process_stage_ids": [1, 2, 3, 4],
+        "date_to": "2026-03-16",
+        "transaction_ids": [
+          1001,
+          1002,
+          1003,
+          1004,
+          1005,
+          1006,
+          1007,
+          1008,
+          1009,
+          1010,
+          1011,
+          1012,
+          1013,
+          1014,
+          1015,
+          1016,
+          1017,
+          1018,
+          1020
+        ],
+        "document_type_names": [
+          "IdentityDocument",
+          "Passport",
+          "ApplicationForm",
+          "Windeed",
+          "ProductFormsBTB",
+          "ProductFormsIFB",
+          "ProductFormsICIB",
+          "Other"
+        ],
+        "process_stage_ids": [
+          1,
+          2,
+          3,
+          4
+        ],
         "allow_agent_to_expand_scope": true
       },
       "current_execution_artifact": {
         "prompt_name": "classification_extraction_bundle",
-        "prompt_version_label": "bundle_v17",
-        "prompt_text": "Classify documents and extract key fields. Prioritize IdentityDocument and Passport precision. Avoid false positives on out-of-scope docs.",
+        "prompt_version_label": "bundle_v18_client_onboarding",
+        "prompt_text": "Classify onboarding documents across IdentityDocument, Passport, ApplicationForm, Windeed, and Product forms. Enforce strict out-of-scope handling while improving extraction completeness for IDs, deed numbers, product codes, and facility limits.",
         "model_name": "llama-3.1-8b-instant",
-        "artifact_hash": "sha256-current-bundle-v17"
+        "artifact_hash": "sha256-current-bundle-v18-client-onboarding"
       },
       "previous_execution_artifact": {
         "prompt_name": "classification_extraction_bundle",
-        "prompt_version_label": "bundle_v16",
-        "prompt_text": "Classify documents and extract key fields. Handle IdentityDocument extraction and basic application fields.",
+        "prompt_version_label": "bundle_v17",
+        "prompt_text": "Classify documents and extract key fields. Prioritize precision and extraction completeness for critical doc types. Keep out-of-scope handling strict.",
         "model_name": "llama-3.1-8b-instant",
-        "artifact_hash": "sha256-previous-bundle-v16"
+        "artifact_hash": "sha256-previous-bundle-v17"
       },
       "evidence_store": {
         "store_type": "excel",
-        "store_ref": "DocumentAI_EvidenceStore",
+        "store_ref": "DocumentAI_EvidenceStore_ClientDemo",
         "sheet_names": {
           "document_data": "DocumentData",
+          "candidate_data": "DocumentData_Candidate",
           "model_data": "ai.ModelData",
           "document_types": "DocumentTypes",
           "process_stages": "ProcessStages",
@@ -51,19 +86,23 @@
       },
       "storage": {
         "artifact_namespace": "agentic-testing",
-        "run_workspace_key": "RUN-2026-03-15-DEMO-RELAXED-001",
+        "run_workspace_key": "RUN-2026-03-16-RELAXED-PASS-DETAIL-001",
         "output_mode": "managed_workspace",
         "workspace_base_path": null
       },
       "policy": {
-        "critical_doc_types": ["IdentityDocument", "Passport", "ApplicationForm"],
+        "critical_doc_types": [
+          "IdentityDocument",
+          "Passport",
+          "ApplicationForm"
+        ],
         "warn_weighted_f1_drop": 0.02,
         "block_weighted_f1_drop": 0.05,
-        "block_empty_rate_increase": 0.03,
+        "block_empty_rate_increase": 0.02,
         "block_exception_rate_increase": 0.02
       },
       "requested_outputs": {
-        "pdf_report": false,
+        "pdf_report": true,
         "html_report": true,
         "excel_log": true,
         "json_packet": true,

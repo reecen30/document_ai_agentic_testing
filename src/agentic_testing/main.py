@@ -366,8 +366,11 @@ def kickoff(inputs=None):
             os.path.dirname(__file__), "..", "..", "workspaces"
         )
     if not os.getenv("EVIDENCE_STORE_PATH"):
-        os.environ["EVIDENCE_STORE_PATH"] = os.path.join(
-            os.path.dirname(__file__), "..", "..", "data", "DocumentAI_EvidenceStore.xlsx"
+        base_data_dir = os.path.join(os.path.dirname(__file__), "..", "..", "data")
+        preferred_demo_store = os.path.join(base_data_dir, "DocumentAI_EvidenceStore_ClientDemo.xlsx")
+        fallback_store = os.path.join(base_data_dir, "DocumentAI_EvidenceStore.xlsx")
+        os.environ["EVIDENCE_STORE_PATH"] = (
+            preferred_demo_store if os.path.exists(preferred_demo_store) else fallback_store
         )
 
     try:
