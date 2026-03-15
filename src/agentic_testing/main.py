@@ -13,6 +13,7 @@ This module handles both.
 import json
 import os
 import sys
+from typing import Any
 
 from crewai.flow.flow import Flow, start
 from pydantic import BaseModel, Field
@@ -21,42 +22,51 @@ from agentic_testing.flow import run_flow_from_maestro_payload
 from agentic_testing.schemas.maestro_input import MaestroInput
 
 
-class MaestroEnvelopeState(BaseModel):
+def _normalize_maestro_payload(raw_payload: Any) -> dict:
     """
-    Slim deployment state so AMP exposes only the intended input envelope fields.
+    Accept either:
+      1) full Maestro payload dict
+      2) JSON string of full Maestro payload
+      3) wrapper {"maestro_payload": <dict-or-json-string>}
+    and return a validated Maestro payload dict.
+    """
+    payload = raw_payload
+
+    if isinstance(payload, dict) and "maestro_payload" in payload and len(payload.keys()) == 1:
+        payload = payload["maestro_payload"]
+
+    if isinstance(payload, str):
+        payload = payload.strip()
+        if not payload:
+            raise ValueError("maestro_payload is empty.")
+        payload = json.loads(payload)
+
+    if not isinstance(payload, dict):
+        raise ValueError("maestro_payload must be a JSON object or JSON string.")
+
+    return MaestroInput(**payload).model_dump()
+
+
+class MaestroSinglePayloadState(BaseModel):
+    """
+    Deployment state with ONE input field so AMP UI shows a single payload box.
     """
 
-    run_request: dict = Field(default_factory=dict)
-    scope: dict = Field(default_factory=dict)
-    current_execution_artifact: dict = Field(default_factory=dict)
-    previous_execution_artifact: dict = Field(default_factory=dict)
-    evidence_store: dict = Field(default_factory=dict)
-    storage: dict = Field(default_factory=dict)
-    policy: dict = Field(default_factory=dict)
-    requested_outputs: dict = Field(default_factory=dict)
+    maestro_payload: Any = Field(
+        default_factory=dict,
+        description="Full Maestro envelope JSON as object or JSON string.",
+    )
 
 
-class AgenticTestingDeploymentFlow(Flow[MaestroEnvelopeState]):
+class AgenticTestingDeploymentFlow(Flow[MaestroSinglePayloadState]):
     """
     Deployment flow entry used by AMP.
-    Exposes a clean Maestro envelope and delegates execution to the real flow.
+    Exposes a SINGLE payload input and delegates execution to the real flow.
     """
 
     @start()
     def run_from_maestro_contract(self) -> dict:
-        payload = {
-            "run_request": self.state.run_request,
-            "scope": self.state.scope,
-            "current_execution_artifact": self.state.current_execution_artifact,
-            "previous_execution_artifact": self.state.previous_execution_artifact,
-            "evidence_store": self.state.evidence_store,
-            "storage": self.state.storage,
-            "policy": self.state.policy,
-            "requested_outputs": self.state.requested_outputs,
-        }
-
-        # Validate envelope shape before deeper flow execution.
-        validated_payload = MaestroInput(**payload).model_dump()
+        validated_payload = _normalize_maestro_payload(self.state.maestro_payload)
         return run_flow_from_maestro_payload(validated_payload)
 
 
@@ -82,9 +92,11 @@ def kickoff(inputs=None):
                 "CREWAI_INPUT env var, or MAESTRO_PAYLOAD env var."
             )
 
-    # Parse JSON string if needed
-    if isinstance(inputs, str):
-        inputs = json.loads(inputs)
+    # Normalize supported input shapes:
+    # - full payload dict
+    # - JSON string payload
+    # - {"maestro_payload": <payload>}
+    inputs = _normalize_maestro_payload(inputs)
 
     # Set workspace base path if not already configured
     if not os.getenv("AGENTIC_LLM_PROVIDER"):
