@@ -78,11 +78,35 @@ Expected:
   - Windeed routing improvements
   - Product form extraction completeness patterns
 
-## 4) Notes
+## 4) High-Confidence PASS Demo (Classification + Extraction)
+
+Payload file:
+- `data/test_maestro_payload_high_confidence_pass_kickoff.json`
+
+PowerShell:
+```powershell
+$AGENT_URL = "https://<your-agent>.crewai.com/kickoff"
+$AGENT_TOKEN = "<your-bearer-token>"
+
+curl -X POST $AGENT_URL `
+  -H "Authorization: Bearer $AGENT_TOKEN" `
+  -H "Content-Type: application/json" `
+  -H "Accept: application/json" `
+  --data-binary "@data/test_maestro_payload_high_confidence_pass_kickoff.json"
+```
+
+Expected:
+- `verdict = PASS`
+- `confidence >= 0.80`
+- `needs_more_evidence = false`
+- non-empty extraction improvements and trend chart in HTML report.
+
+## 5) Notes
 
 - These payloads are already in **single envelope** format:
   - `{"inputs":{"maestro_payload":{...}}}`
 - Evidence store used:
   - `data/DocumentAI_EvidenceStore_ClientDemo.xlsx`
+  - `data/DocumentAI_EvidenceStore_HighConfidenceDemo.xlsx`
   - (compatibility copy: `data/DocumentAI_EvidenceStore_Demo.xlsx`)
   - Candidate sheet: `DocumentData_Candidate`

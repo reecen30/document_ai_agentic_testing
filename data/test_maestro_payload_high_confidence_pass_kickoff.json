@@ -1,0 +1,79 @@
+{
+  "inputs": {
+    "maestro_payload": {
+      "run_request": {
+        "run_id": "RUN-2026-03-16-HIGHCONF-PASS-001",
+        "process_name": "document_ai_agentic_testing",
+        "run_mode": "demo",
+        "analysis_mode": "agentic_investigation",
+        "time_budget_minutes": 15,
+        "max_initial_transactions": 12,
+        "max_total_transactions": 12,
+        "max_targeted_reruns": 0,
+        "triggered_by": "manual_high_confidence_demo"
+      },
+      "scope": {
+        "date_from": "2026-03-01",
+        "date_to": "2026-03-16",
+        "transaction_ids": [1001, 1002, 1006, 1020, 1201, 1202, 1203, 1204, 1205, 1206, 1207, 1208],
+        "document_type_names": ["IdentityDocument"],
+        "process_stage_ids": [1, 2, 3, 4],
+        "allow_agent_to_expand_scope": false
+      },
+      "current_execution_artifact": {
+        "prompt_name": "classification_extraction_bundle",
+        "prompt_version_label": "bundle_v19_high_conf",
+        "prompt_text": "Classify onboarding packs with strict identity detection and robust IdentityNumber extraction. Prefer recall for valid identity fields without increasing false positives.",
+        "model_name": "llama-3.1-8b-instant",
+        "artifact_hash": "sha256-current-bundle-v19-high-confidence"
+      },
+      "previous_execution_artifact": {
+        "prompt_name": "classification_extraction_bundle",
+        "prompt_version_label": "bundle_v18",
+        "prompt_text": "Classify onboarding packs and extract key fields with strict out-of-scope controls.",
+        "model_name": "llama-3.1-8b-instant",
+        "artifact_hash": "sha256-previous-bundle-v18"
+      },
+      "evidence_store": {
+        "store_type": "excel",
+        "store_ref": "DocumentAI_EvidenceStore_HighConfidenceDemo",
+        "sheet_names": {
+          "document_data": "DocumentData",
+          "candidate_data": "DocumentData_Candidate",
+          "model_data": "ai.ModelData",
+          "document_types": "DocumentTypes",
+          "process_stages": "ProcessStages",
+          "model_names": "ai.ModelNames",
+          "model_stages": "ai.ModelStages",
+          "model_types": "ai.ModelTypes",
+          "exception_logs": "ExceptionLogs",
+          "api_data": "api.APIData"
+        }
+      },
+      "storage": {
+        "artifact_namespace": "agentic-testing",
+        "run_workspace_key": "RUN-2026-03-16-HIGHCONF-PASS-001",
+        "output_mode": "managed_workspace",
+        "workspace_base_path": null
+      },
+      "policy": {
+        "critical_doc_types": ["IdentityDocument", "Passport", "ApplicationForm"],
+        "warn_weighted_f1_drop": 0.02,
+        "block_weighted_f1_drop": 0.05,
+        "block_empty_rate_increase": 0.02,
+        "block_exception_rate_increase": 0.02,
+        "warn_confidence_below": 0.60,
+        "block_confidence_below": 0.35
+      },
+      "requested_outputs": {
+        "pdf_report": true,
+        "html_report": true,
+        "excel_log": true,
+        "json_packet": true,
+        "trace_pack": true,
+        "patch_candidates": true,
+        "audit_log_excel": true
+      }
+    }
+  }
+}
