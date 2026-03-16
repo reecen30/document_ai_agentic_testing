@@ -108,5 +108,17 @@ Expected:
 - Evidence store used:
   - `data/DocumentAI_EvidenceStore_ClientDemo.xlsx`
   - `data/DocumentAI_EvidenceStore_HighConfidenceDemo.xlsx`
+  - `data/DocumentAI_EvidenceStore_HighConfidenceMixedDemo.xlsx`
   - (compatibility copy: `data/DocumentAI_EvidenceStore_Demo.xlsx`)
   - Candidate sheet: `DocumentData_Candidate`
+
+## 6) High-Confidence PASS (Mixed Improvements + Regressions, Rich Data)
+
+Payload file:
+- `data/test_maestro_payload_high_confidence_pass_mixed_kickoff.json`
+
+Expected:
+- `verdict = PASS`
+- `confidence = 0.8` (or higher)
+- non-empty `improvements` and non-empty `regressions`
+- rich doc-type breakdown and trend chart, with no critical-doc-type block.
